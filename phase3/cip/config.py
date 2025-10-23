@@ -200,11 +200,17 @@ def create_packet_class(assembly_element: ET.Element) -> Tuple[Optional[Type[sca
     byte_packet_field = create_packet_dict(fields_dict, assembly_size)
     sorted_field = sorted_fields(byte_packet_field)
     field_desc = []
+    signal_info: Dict[str, Dict[str, int]] = {}
 
     for field in sorted_field:
         field_id = field["id"]
         field_type = field["type"]
         field_length = field["length"]
+        signal_info[field_id] = {
+            "type": field_type,
+            "length": field_length,
+            "offset": field["offset"],
+        }
 
         if field_type == "usint":
             field_desc.append(scapy_all.ByteField(field_id, 0))
@@ -221,7 +227,11 @@ def create_packet_class(assembly_element: ET.Element) -> Tuple[Optional[Type[sca
         elif field_type == "sint":
             field_desc.append(scapy_all.SignedByteField(field_id, 0))
 
-    dynamic_packet_class = type(class_name, (scapy_all.Packet,), {"name": class_name, "fields_desc": field_desc})
+    dynamic_packet_class = type(
+        class_name,
+        (scapy_all.Packet,),
+        {"name": class_name, "fields_desc": field_desc, "signal_info": signal_info},
+    )
     return dynamic_packet_class, assembly_size
 
 
