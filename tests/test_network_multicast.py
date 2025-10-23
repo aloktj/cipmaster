@@ -45,6 +45,13 @@ default via 192.168.0.1 dev eth0 proto dhcp metric 100
 """
 
 
+LINUX_MULTICAST_KEYWORD_OUTPUT = """
+multicast 239.192.0.0 dev eth0 scope link src 172.16.5.16
+multicast 239.192.1.2 dev eth0 scope link src 172.16.5.16
+multicast 224.0.0.0 dev eth0 scope link src 172.16.5.16
+"""
+
+
 DARWIN_ROUTE_OUTPUT = """
 Routing tables
 
@@ -99,3 +106,31 @@ def test_check_multicast_support_accepts_valid_address():
     assert supported is True
     assert route_exists is True
     assert route == "224.0.0.0/4"
+
+
+@pytest.mark.parametrize(
+    "output, expected_route",
+    [
+        (
+            "multicast 239.192.0.0 dev eth0 scope link src 172.16.5.16",
+            "239.192.0.0/16",
+        ),
+        (
+            "multicast 239.192.1.2 dev eth0 scope link src 172.16.5.16",
+            "239.192.1.2/32",
+        ),
+        (
+            "multicast 224.0.0.0 dev eth0 scope link src 172.16.5.16",
+            "224.0.0.0/4",
+        ),
+        (LINUX_MULTICAST_KEYWORD_OUTPUT, "239.192.0.0/16"),
+    ],
+)
+def test_get_multicast_route_handles_keyword_routes(output, expected_route):
+    subprocess_service = RecordingSubprocess(output)
+    route = network.get_multicast_route(
+        platform_service=StubPlatform("Linux"),
+        subprocess_service=subprocess_service,
+    )
+
+    assert route == expected_route

@@ -116,6 +116,31 @@ def _normalize_prefix_token(token: str) -> Optional[str]:
     return candidate
 
 
+def _guess_network_from_address(address: ipaddress.IPv4Address) -> ipaddress.IPv4Network:
+    """Best-effort deduction of a network from a multicast route address.
+
+    Some operating systems (notably certain Linux distributions) emit multicast
+    routes as ``multicast <address> dev …`` without providing an explicit
+    netmask.  We attempt to infer the intended prefix length based on the
+    trailing zero pattern of the IP.  For general multicast catch-all routes we
+    fall back to the RFC 5771 range (224.0.0.0/4).
+    """
+
+    if address == ipaddress.IPv4Address("224.0.0.0"):
+        return _MULTICAST_RANGE
+
+    packed = address.packed
+    if packed[1:] == b"\x00\x00\x00":
+        prefix = 8
+    elif packed[2:] == b"\x00\x00":
+        prefix = 16
+    elif packed[3:] == b"\x00":
+        prefix = 24
+    else:
+        prefix = 32
+    return ipaddress.IPv4Network(f"{address}/{prefix}", strict=False)
+
+
 def _parse_multicast_route(stdout: str) -> Optional[str]:
     """Return the first multicast-capable network found in the command output."""
 
@@ -143,9 +168,26 @@ def _parse_multicast_route(stdout: str) -> Optional[str]:
             try:
                 network = ipaddress.IPv4Network((ips[0], ips[1]), strict=False)
             except ValueError:
-                continue
-            if network.subnet_of(_MULTICAST_RANGE):
-                return str(network)
+                network = None
+            else:
+                if network.subnet_of(_MULTICAST_RANGE):
+                    return str(network)
+
+        if "multicast" in line.lower():
+            for ip_text in ips:
+                try:
+                    address = ipaddress.IPv4Address(ip_text)
+                except ipaddress.AddressValueError:
+                    continue
+                if address not in _MULTICAST_RANGE:
+                    continue
+                network = _guess_network_from_address(address)
+                if network.subnet_of(_MULTICAST_RANGE):
+                    return str(network)
+
+            # If we encountered a multicast line but could not parse a more
+            # specific network, fall back to the general multicast range.
+            return str(_MULTICAST_RANGE)
 
     return None
 
