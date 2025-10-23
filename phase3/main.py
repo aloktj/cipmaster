@@ -6,18 +6,16 @@ import os
 import math
 import threading
 import pyfiglet
-import string
 from termcolor import colored
 from tabulate import tabulate
 import logging
 from datetime import datetime
-from struct import pack, unpack
 import binascii
-import struct
 from dataclasses import dataclass
 from typing import Any, Optional
 
 from cip import config as cip_config
+from cip import fields as cip_fields
 from cip import network as cip_network
 from cip import session as cip_session
 from cip.ui import ClickUserInterface, UserInterface
@@ -453,146 +451,38 @@ class CLI:
         self.logger.info("Executing set_field function")
         self.stop_wave(field_name)
         self.lock.acquire()
-        if hasattr(self.OT_packet, field_name):
+        try:
+            if not hasattr(self.OT_packet, field_name):
+                self.write(f"Field {field_name} not found.")
+                return
+
             field = getattr(self.OT_packet.__class__, field_name)
-            if isinstance(field, scapy_all.IEEEFloatField):
-                try:
-                    byte_array = struct.pack('f', float(field_value))
-                    reversed_byte_array = byte_array[::-1]
-                    bE_field_value = struct.unpack('f', reversed_byte_array)[0] #Big endian field value
-                    setattr(self.OT_packet, field_name, bE_field_value)
-                    self.write(f"Set {field_name} to {field_value}")
-                except ValueError:
-                    self.write(f"Field {field_name} expects a float value.")
-            elif isinstance(field, scapy_all.BitField):
-                if field_value in ['0', '1']:
-                    setattr(self.OT_packet, field_name, int(field_value))
-                    self.write(f"Set {field_name} to {field_value}")
-                else:
-                    self.write(f"Field {field_name} expects a value of either '0' or '1'.")
-            elif isinstance(field, scapy_all.ByteField):
-                if field_value.startswith('0x') and len(field_value) == 4 and all(
-                        c in string.hexdigits for c in field_value[2:]):
-                    int_value = int(field_value, 16)
-                    setattr(self.OT_packet, field_name, int_value)
-                    self.write(f"Set {field_name} to {field_value}")
-                elif field_value.isdigit():
-                    int_value = int(field_value)
-                    if 0 <= int_value <= 0xFF:
-                        setattr(self.OT_packet, field_name, int_value)
-                        self.write(f"Set {field_name} to {field_value}")
-                    else:
-                        self.write(f"Field {field_name} expects an integer value between 0 and 255.")
-                else:
-                    self.write(
-                        f"Field {field_name} expects an integer value or a hexadecimal value in the format '0x00' to '0xFF'.")
-            
-            elif isinstance(field, scapy_all.ShortField):
-                if field_value.startswith('0x') and len(field_value) == 6 and all(
-                    c in string.hexdigits for c in field_value[2:]):
-                    int_value = int(field_value, 16)
-                    setattr(self.OT_packet, field_name, int(int_value.to_bytes(2, byteorder='big')))
-                    self.write(f"Set {field_name} to {field_value}")
-                elif field_value.isdigit():
-                    int_value = int(field_value)
-                    if 0 <= int_value <= 0xFFFF:
-                        try:
-                            byte_array = int_value.to_bytes(2, byteorder='big')
-                            reversed_byte_array = byte_array[::-1]
-                            converted_value = int.from_bytes(reversed_byte_array, byteorder='big')
-                            setattr(self.OT_packet, field_name, converted_value)
-                        except:
-                            self.write("Error in setting ShortField")
-                        self.write(f"Set {field_name} to {field_value}")
-                    else:
-                        self.write(f"Field {field_name} expects an integer value between 0 and 65535.")
-                else:
-                    self.write(f"Field {field_name} expects an integer value or a hexadecimal value in the format '0x0000' to '0xFFFF'.")
-            
-            ###
-            elif isinstance(field, scapy_all.LEShortField):
+            metadata = cip_fields.get_field_metadata(self.OT_packet, field_name)
+            codec = cip_fields.get_field_codec(field)
+            if codec is None:
+                validation = cip_fields.describe_validation(field, packet=self.OT_packet, metadata=metadata)
+                field_type = validation.get("type", field.__class__.__name__)
+                self.write(
+                    f"Field {field_name} has unsupported type {field_type} and cannot be set via this command."
+                )
+                return
 
-                if field_value.startswith('0x') and len(field_value) == 4 and all(
-                    c in string.hexdigits for c in field_value[2:]):
+            try:
+                encoded_value = cip_fields.encode_field_value(
+                    field,
+                    field_value,
+                    field_name=field_name,
+                    packet=self.OT_packet,
+                    metadata=metadata,
+                )
+            except ValueError as exc:
+                self.write(str(exc))
+                return
 
-                    int_value = int(field_value, 16)
-                    setattr(self.OT_packet, field_name, int_value.to_bytes(2, byteorder='big'))
-                    self.write(f"Set {field_name} to {field_value}")
-
-                elif field_value.isdigit():
-
-                    int_value = int(field_value)
-                    if 0 <= int_value <= 0xFFFF:
-                        setattr(self.OT_packet, field_name, int_value) 
-                        self.write(f"Set {field_name} to {field_value}")
-
-                    else:
-                        self.write(f"Field {field_name} expects an integer value between 0 and 65535.")
-
-                else:
-
-                    self.write(f"Field {field_name} expects an integer value or a hexadecimal value in the format '0x0000' to '0xFFFF'.")
-                            
-            ###
-            
-            elif isinstance(field, scapy_all.IEEEDoubleField):
-
-                if field_value.startswith('0x'):
-
-                    int_value = int(field_value, 16)
-
-                    if 0 <= int_value <= (2**64 - 1):  
-
-                        setattr(self.OT_packet, field_name, int_value)
-
-                        self.write(f"Set {field_name} to {field_value}")
-
-                    else:
-
-                        self.write("Value out of range for IEEEDoubleField")
-
-                elif field_value.isdigit():
-
-                    int_value = float(field_value)
-
-                    if 0 <= int_value <= (2**64 - 1):
-
-                        setattr(self.OT_packet, field_name, int_value)  
-
-                        self.write(f"Set {field_name} to {field_value}")
-
-                    else:
-
-                        self.write("Value out of range for IEEEDoubleField")
-
-                else:
-
-                    self.write("Field value must be a number for IEEEDoubleField")
-            
-            
-            elif isinstance(field, scapy_all.StrFixedLenField):
-                if isinstance(field_value, str):
-                    
-                    field_value1 = field_value
-                    field_value = field_value.encode() # Convert String to Bytes
-                    self.write(field_value)
-                if not isinstance(field_value, bytes):
-                    self.write(f"Field values is not byte type")
-                field_value1 = field_value
-                # field_bytes = field_value.rjust(field.length_from(self.OT_packet), b'\x00')
-                                
-                if len(field_value) <= field.length_from(self.OT_packet):
-                    setattr(self.OT_packet, field_name, field_value)
-                    self.write(f"Set {field_name} to {field_value}")
-                else:
-                    self.write(f"Field {field_name} expects a string of length up to {field.length_from(self.OT_packet)}.")
-            else:
-                self.write(f"Field {field_name} is not of type IEEEFloatField, BitField, ByteField, or StrFixedLenField and "
-                      f"cannot be set.")
-        else:
-            self.write(f"Field {field_name} not found.")
-            
-        self.lock.release()
+            setattr(self.OT_packet, field_name, encoded_value)
+            self.write(f"Set {field_name} to {field_value}")
+        finally:
+            self.lock.release()
         
        
     def clear_field(self, field_name):
@@ -600,14 +490,15 @@ class CLI:
         self.stop_wave(field_name)
         if hasattr(self.OT_packet, field_name):
             field = getattr(self.OT_packet.__class__, field_name)
-            if isinstance(field, scapy_all.IEEEFloatField) or isinstance(field, scapy_all.BitField) or isinstance(field, scapy_all.ByteField):
-                setattr(self.OT_packet, field_name, 0)
-                self.write(f"Cleared {field_name}")
-            elif isinstance(field, scapy_all.StrFixedLenField):
-                setattr(self.OT_packet, field_name, '')
+            codec = cip_fields.get_field_codec(field)
+            if codec is None:
+                self.write(f"Cannot clear field {field_name}: unsupported field type.")
+            elif codec.name == "string":
+                setattr(self.OT_packet, field_name, b"")
                 self.write(f"Cleared {field_name}")
             else:
-                self.write(f"Cannot clear field {field_name}: unsupported field type.")
+                setattr(self.OT_packet, field_name, 0)
+                self.write(f"Cleared {field_name}")
         else:
             self.write(f"Field {field_name} not found.")
             
@@ -641,42 +532,13 @@ class CLI:
     def get_big_endian_value(self, packet, field_name):
         field = getattr(packet.__class__, field_name)
         field_value = getattr(packet, field_name)
-
-        if isinstance(field, scapy_all.IEEEFloatField):
-            byte_array = struct.pack('f', float(field_value))
-            reversed_byte_array = byte_array[::-1]
-            bE_field_value = struct.unpack('f', reversed_byte_array)[0]  # Big endian field value
-            return bE_field_value
-
-        elif isinstance(field, scapy_all.ShortField):
-            byte_array = int(field_value).to_bytes(2, byteorder='big')
-            reversed_byte_array = byte_array[::-1]
-            bE_field_value = int.from_bytes(reversed_byte_array, byteorder='big')
-            return bE_field_value
-
-        elif isinstance(field, scapy_all.ByteField):
-            byte_array = int(field_value).to_bytes(1, byteorder='big')
-            reversed_byte_array = byte_array[::-1]
-            bE_field_value = int.from_bytes(reversed_byte_array, byteorder='big')
-            return bE_field_value
-
-        elif isinstance(field, scapy_all.IntField):
-            byte_array = int(field_value).to_bytes(4, byteorder='big')
-            reversed_byte_array = byte_array[::-1]
-            bE_field_value = int.from_bytes(reversed_byte_array, byteorder='big')
-            return bE_field_value
-
-        elif isinstance(field, scapy_all.LongField):
-            byte_array = int(field_value).to_bytes(8, byteorder='big')
-            reversed_byte_array = byte_array[::-1]
-            bE_field_value = int.from_bytes(reversed_byte_array, byteorder='big')
-            return bE_field_value
-
-        elif isinstance(field, scapy_all.StrField):
-            return field_value
-
-        else:
-            return field_value
+        metadata = cip_fields.get_field_metadata(packet, field_name)
+        return cip_fields.decode_field_value(
+            field,
+            field_value,
+            packet=packet,
+            metadata=metadata,
+        )
     
     def print_frame(self):
         # Print timestamp
@@ -847,103 +709,163 @@ class CLI:
         self.logger.info("Executing wave_field function")
         self.stop_wave(field_name)
         field = getattr(self.OT_packet.__class__, field_name)
-        if isinstance(field, scapy_all.IEEEFloatField):
+        metadata = cip_fields.get_field_metadata(self.OT_packet, field_name)
+        codec = cip_fields.get_field_codec(field)
+        if codec is None or codec.name != "float":
+            self.write(f"Field {field_name} is not a floating point field and cannot be waved.")
+            return
+
+        try:
             max_value = float(max_value)
             min_value = float(min_value)
-            period_ms = float(period_ms) / 1000  # Convert milliseconds to seconds
-            amplitude = (max_value - min_value) / 2
-            offset = (max_value + min_value) / 2
+            period_seconds = float(period_ms) / 1000
+        except (TypeError, ValueError):
+            self.write(f"Field {field_name} expects numeric bounds and a valid period.")
+            return
 
-            def wave_thread():
-                self.logger.info("Executing wave_thread function")
-                start_time = time.time()
-                while not self.stop_events[field_name].is_set():
-                    current_time = time.time()
-                    elapsed_time = current_time - start_time
-                    wave_value = amplitude * math.sin(2 * math.pi * elapsed_time / period_ms) + offset
-                    
-                    byte_array = struct.pack('f', float(wave_value))
-                    reversed_byte_array = byte_array[::-1]
-                    bE_field_value = struct.unpack('f', reversed_byte_array)[0] #Big endian field value
-                    setattr(self.OT_packet, field_name, bE_field_value)
-                    
-                    # self.write(f"Set {field_name} to {wave_value}")
-                    time.sleep(0.01)  # Adjust sleep time as needed
+        if period_seconds <= 0:
+            self.write(f"Field {field_name} requires a positive period.")
+            return
 
-            self.stop_events[field_name] = threading.Event()
-            wave_thread_instance = threading.Thread(target=wave_thread)
-            wave_thread_instance.start()
-            self.write(f"Waving {field_name} from {min_value} to {max_value} every {period_ms} milliseconds.")
-        else:
-            self.write(f"Field {field_name} is not of type IEEEFloatField and cannot be waved.")
+        amplitude = (max_value - min_value) / 2
+        offset = (max_value + min_value) / 2
+
+        def wave_thread():
+            self.logger.info("Executing wave_thread function")
+            start_time = time.time()
+            while not self.stop_events[field_name].is_set():
+                current_time = time.time()
+                elapsed_time = current_time - start_time
+                wave_value = amplitude * math.sin(2 * math.pi * elapsed_time / period_seconds) + offset
+
+                try:
+                    encoded_value = cip_fields.encode_field_value(
+                        field,
+                        wave_value,
+                        field_name=field_name,
+                        packet=self.OT_packet,
+                        metadata=metadata,
+                    )
+                except ValueError as exc:
+                    self.write(str(exc))
+                    break
+
+                setattr(self.OT_packet, field_name, encoded_value)
+                time.sleep(0.01)
+
+        self.stop_events[field_name] = threading.Event()
+        wave_thread_instance = threading.Thread(target=wave_thread)
+        wave_thread_instance.start()
+        self.write(f"Waving {field_name} from {min_value} to {max_value} every {period_ms} milliseconds.")
             
     def tria_field(self, field_name, max_value, min_value, period_ms):
         self.logger.info("Executing tria_field function")
         self.stop_wave(field_name)
         field = getattr(self.OT_packet.__class__, field_name)
-        if isinstance(field, scapy_all.IEEEFloatField):
+        metadata = cip_fields.get_field_metadata(self.OT_packet, field_name)
+        codec = cip_fields.get_field_codec(field)
+        if codec is None or codec.name != "float":
+            self.write(f"Field {field_name} is not a floating point field and cannot be waved.")
+            return
+
+        try:
             max_value = float(max_value)
             min_value = float(min_value)
-            period_ms = float(period_ms) / 1000  # Convert milliseconds to seconds
-            amplitude = (max_value - min_value) / 2
-            offset = (max_value + min_value) / 2
+            period_seconds = float(period_ms) / 1000
+        except (TypeError, ValueError):
+            self.write(f"Field {field_name} expects numeric bounds and a valid period.")
+            return
 
-            def tria_wave_thread():
-                self.logger.info("Executing tria_wave_thread function")
-                start_time = time.time()
-                while not self.stop_events[field_name].is_set():
-                    current_time = time.time()
-                    elapsed_time = current_time - start_time
-                    phase = elapsed_time / period_ms
-                    wave_value = (amplitude * (2 * abs(phase - math.floor(phase + 0.5)) - 1)) + offset
-                    byte_array = struct.pack('f', float(wave_value))
-                    reversed_byte_array = byte_array[::-1]
-                    bE_field_value = struct.unpack('f', reversed_byte_array)[0] #Big endian field value
-                    setattr(self.OT_packet, field_name, bE_field_value)
-                    # self.write(f"Set {field_name} to {wave_value}")
-                    time.sleep(0.01)  # Adjust sleep time as needed
+        if period_seconds <= 0:
+            self.write(f"Field {field_name} requires a positive period.")
+            return
 
-            self.stop_events[field_name] = threading.Event()
-            wave_thread_instance = threading.Thread(target=tria_wave_thread)
-            wave_thread_instance.start()
-            self.write(f"Triangular waving {field_name} from {min_value} to {max_value} every {period_ms} milliseconds.")
-        else:
-            self.write(f"Field {field_name} is not of type IEEEFloatField and cannot be waved.")
+        amplitude = (max_value - min_value) / 2
+        offset = (max_value + min_value) / 2
+
+        def tria_wave_thread():
+            self.logger.info("Executing tria_wave_thread function")
+            start_time = time.time()
+            while not self.stop_events[field_name].is_set():
+                current_time = time.time()
+                elapsed_time = current_time - start_time
+                phase = elapsed_time / period_seconds
+                wave_value = (amplitude * (2 * abs(phase - math.floor(phase + 0.5)) - 1)) + offset
+                try:
+                    encoded_value = cip_fields.encode_field_value(
+                        field,
+                        wave_value,
+                        field_name=field_name,
+                        packet=self.OT_packet,
+                        metadata=metadata,
+                    )
+                except ValueError as exc:
+                    self.write(str(exc))
+                    break
+
+                setattr(self.OT_packet, field_name, encoded_value)
+                time.sleep(0.01)
+
+        self.stop_events[field_name] = threading.Event()
+        wave_thread_instance = threading.Thread(target=tria_wave_thread)
+        wave_thread_instance.start()
+        self.write(f"Triangular waving {field_name} from {min_value} to {max_value} every {period_ms} milliseconds.")
             
     
     def box_field(self, field_name, max_value, min_value, period_ms, duty_cycle):
         self.logger.info("Executing box_field function")
         self.stop_wave(field_name)
         field = getattr(self.OT_packet.__class__, field_name)
-        if isinstance(field, scapy_all.IEEEFloatField):
+        metadata = cip_fields.get_field_metadata(self.OT_packet, field_name)
+        codec = cip_fields.get_field_codec(field)
+        if codec is None or codec.name != "float":
+            self.write(f"Field {field_name} is not a floating point field and cannot be waved.")
+            return
+
+        try:
             max_value = float(max_value)
             min_value = float(min_value)
-            period_ms = float(period_ms) / 1000  # Convert milliseconds to seconds
+            period_seconds = float(period_ms) / 1000
             duty_cycle = float(duty_cycle)
-            # amplitude = (max_value - min_value) / 2
-            # offset = (max_value + min_value) / 2
+        except (TypeError, ValueError):
+            self.write(f"Field {field_name} expects numeric bounds, duty cycle, and a valid period.")
+            return
 
-            def box_wave_thread():
-                self.logger.info("Executing box_wave_thread function")
-                start_time = time.time()
-                while not self.stop_events[field_name].is_set():
-                    current_time = time.time()
-                    elapsed_time = current_time - start_time
-                    duty_period = period_ms * duty_cycle
-                    wave_value = max_value if (elapsed_time % period_ms) < duty_period else min_value
-                    byte_array = struct.pack('f', float(wave_value))
-                    reversed_byte_array = byte_array[::-1]
-                    bE_field_value = struct.unpack('f', reversed_byte_array)[0] #Big endian field value
-                    setattr(self.OT_packet, field_name, bE_field_value)
-                    # self.write(f"Set {field_name} to {wave_value}")
-                    time.sleep(0.01)  # Adjust sleep time as needed
+        if period_seconds <= 0:
+            self.write(f"Field {field_name} requires a positive period.")
+            return
 
-            self.stop_events[field_name] = threading.Event()
-            wave_thread_instance = threading.Thread(target=box_wave_thread)
-            wave_thread_instance.start()
-            self.write(f"Generating square wave for {field_name} with duty cycle {duty_cycle} every {period_ms} milliseconds.")
-        else:
-            self.write(f"Field {field_name} is not of type IEEEFloatField and cannot be waved.")
+        if not 0 <= duty_cycle <= 1:
+            self.write(f"Duty cycle for {field_name} must be between 0.0 and 1.0.")
+            return
+
+        def box_wave_thread():
+            self.logger.info("Executing box_wave_thread function")
+            start_time = time.time()
+            while not self.stop_events[field_name].is_set():
+                current_time = time.time()
+                elapsed_time = current_time - start_time
+                duty_period = period_seconds * duty_cycle
+                wave_value = max_value if (elapsed_time % period_seconds) < duty_period else min_value
+                try:
+                    encoded_value = cip_fields.encode_field_value(
+                        field,
+                        wave_value,
+                        field_name=field_name,
+                        packet=self.OT_packet,
+                        metadata=metadata,
+                    )
+                except ValueError as exc:
+                    self.write(str(exc))
+                    break
+
+                setattr(self.OT_packet, field_name, encoded_value)
+                time.sleep(0.01)
+
+        self.stop_events[field_name] = threading.Event()
+        wave_thread_instance = threading.Thread(target=box_wave_thread)
+        wave_thread_instance.start()
+        self.write(f"Generating square wave for {field_name} with duty cycle {duty_cycle} every {period_ms} milliseconds.")
             
     def stop_all_thread(self):
         self.logger.info(f"{self.stop_all_thread.__name__}: Stopping all wave threads for domain")

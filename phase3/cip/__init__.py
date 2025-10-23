@@ -5,4 +5,5 @@ __all__ = [
     "network",
     "session",
     "ui",
+    "fields",
 ]
