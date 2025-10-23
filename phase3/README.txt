@@ -2,7 +2,7 @@
 CIP Tool – Local Development Quick Start
 ========================================
 
-The CIP CLI lives in ``phase3`` and expects Python 3.9+ with a working
+The CIP CLI lives in ``phase3`` and expects Python 3.10+ with a working
 ``scapy`` installation (raw socket support). Running the tool typically
 requires administrator/root privileges because it captures and injects
 EtherNet/IP packets.
@@ -10,7 +10,7 @@ EtherNet/IP packets.
 Prerequisites
 -------------
 
-* Python 3.9 or newer (the refactor was validated against CPython 3.9).
+* Python 3.10 or newer (the refactor was validated against CPython 3.12).
 * ``libpcap``/``npcap`` and the ability to open raw sockets
   (``sudo``/Administrator).
 * CIP XML configuration files stored in ``phase3/conf`` – the CLI will

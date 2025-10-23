@@ -251,7 +251,7 @@ class Client(object):
         # print("DEBUG:5.18")
         if self.Sock is not None:
             # print("DEBUG:5.19")
-            self.Sock.send(raw(sessionpkt))
+            self.Sock.send(scapy_all.raw(sessionpkt))
             # print("DEBUG:5.20")
             reply_pkt = self.recv_enippkt()
             # print("DEBUG:5.21")
@@ -280,7 +280,7 @@ class Client(object):
             ENIP_SendUnitData_Item() / cippkt
         ])
         if self.Sock is not None:
-            self.Sock.send(raw(enippkt))
+            self.Sock.send(scapy_all.raw(enippkt))
 
     def send_rr_cm_cip(self, cippkt):
         """Encapsulate the CIP packet into a ConnectionManager packet"""
@@ -305,7 +305,7 @@ class Client(object):
         ])
         self.sequence_unit_cip += 1
         if self.Sock is not None:
-            self.Sock.send(raw(enippkt))
+            self.Sock.send(scapy_all.raw(enippkt))
 
     def recv_enippkt(self):
         """Receive an ENIP packet from the TCP socket"""
@@ -377,7 +377,7 @@ class Client(object):
         self.logger.info(f"TGV2020: send_UDP_ENIP_CIP_IO: sequence_CIP_IO {self.sequence_CIP_IO}")
         if self.Sock1 is not None:
             self.logger.info("TGV2020: send_UDP_ENIP_CIP_IO: Sending UDP_ENIP_CIP_IO through socket")
-            self.Sock1.send(raw(enippkt))
+            self.Sock1.send(scapy_all.raw(enippkt))
         else:
             self.logger.warning("TGV2020: send_UDP_ENIP_CIP_IO: Socket error: failed to send UDP_ENIP_CIP_IO")
 

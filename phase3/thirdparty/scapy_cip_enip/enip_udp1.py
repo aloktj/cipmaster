@@ -75,7 +75,7 @@ class ENIP_UDP(scapy_all.Packet):
     ]
 
     def extract_padding(self, p):
-        return "", p
+        return b"", p
 
 
 class CIP_IO(scapy_all.Packet):
@@ -85,11 +85,11 @@ class CIP_IO(scapy_all.Packet):
         #CIP IO standard part  
         scapy_all.LEShortField("CIP_Sequence_Count", 0),
         scapy_all.LEIntField("Header", 0),
-        scapy_all.StrLenField("Data", "", length_from=lambda pkt: len(pkt.payload))  # Adjust as per your data size
+        scapy_all.StrLenField("Data", b"", length_from=lambda pkt: len(pkt.payload))  # Adjust as per your data size
     ]
     
     def extract_padding(self, p):
-        return "", p
+        return b"", p
 
 scapy_all.bind_layers(scapy_all.UDP, ENIP_UDP, sport=2222, dport=2222)
 scapy_all.bind_layers(ENIP_UDP_Item, ENIP_UDP_SequencedAddress, type_id=0x8002)
@@ -106,7 +106,7 @@ if __name__ == '__main__':
     ])
 
     # Build!
-    data = str(pkt)
+    data = bytes(pkt)
     pkt = scapy_all.Ether(data)
     pkt.show()
 
