@@ -6,10 +6,13 @@
 import logging
 import socket
 import struct
+from typing import Any, Optional
+
 from scapy import all as scapy_all
 import os
 
 
+from thirdparty.scapy_cip_enip import utils
 from thirdparty.scapy_cip_enip.cip import CIP, CIP_Path, CIP_ReqConnectionManager, \
     CIP_MultipleServicePacket, CIP_ReqForwardOpen, CIP_RespForwardOpen, \
     CIP_ReqForwardClose, CIP_ReqGetAttributeList, CIP_ReqReadOtherTag
@@ -34,6 +37,29 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     filename='./log/app.log'
 )
+
+
+def _item_payload_bytes(payload: Any) -> bytes:
+    """Return the raw bytes carried by an ENIP connected data item payload."""
+
+    if payload is None:
+        raise ValueError("empty payload")
+
+    if isinstance(payload, (bytes, bytearray)):
+        return bytes(payload)
+
+    load = getattr(payload, "load", None)
+    if isinstance(load, (bytes, bytearray)):
+        return bytes(load)
+
+    original = getattr(payload, "original", None)
+    if isinstance(original, (bytes, bytearray)):
+        return bytes(original)
+
+    if isinstance(payload, scapy_all.Packet):
+        return bytes(payload)
+
+    return bytes(payload)
 
 class AS_MPU_DCUi_DATA(scapy_all.Packet):
     """Common Industrial Protocol, I/O input
@@ -185,8 +211,10 @@ class Client(object):
         """ create two IP connection,
             - first:to manage CIP unicast of DCU TGV2020 (TCP and UDP) ,
             - second:to manage CIP multicast frame (224.0.0.0/4 RFC5771) only UDP due to multicast"""
+        self._local_ip: Optional[str] = None
+
         if not NO_NETWORK:
-            #open connection with DCU 
+            #open connection with DCU
             try:
                 # print("DEBUG:5.1")
                 self.Sock = socket.create_connection((IPAddr, self.PortEtherNetIPExplicitMessage))
@@ -196,13 +224,31 @@ class Client(object):
                 logger.warn("socket error: %s", exc)
                 logger.warn("Continuing without sending anything")
                 self.Sock = None
+            else:
+                try:
+                    self._local_ip = self.Sock.getsockname()[0]
+                    self.logger.debug(
+                        "Detected local interface %s for CIP session", self._local_ip
+                    )
+                except OSError as exc:
+                    self.logger.debug(
+                        "Unable to determine local interface for CIP session: %s", exc
+                    )
+                    self._local_ip = None
 
             #open connection to the multicast group
             try:
                 # print("DEBUG:5.4")
                 # Create the socket
                 self.MulticastSock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                
+
+                try:
+                    self.MulticastSock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                except OSError as exc:
+                    self.logger.debug(
+                        "Unable to enable SO_REUSEADDR on multicast socket: %s", exc
+                    )
+
                 # print("DEBUG:5.5")
                 # Bind to the server address
                 self.MulticastSock.bind(('',self.PortEtherNetIPImplicitMessageIO))
@@ -212,9 +258,62 @@ class Client(object):
                 # on all interfaces.
                 group = socket.inet_aton(MulticastGroupIPaddr)
                 # print("DEBUG:5.7")
-                mreq = struct.pack('4sL', group, socket.INADDR_ANY)
-                # print("DEBUG:5.8")
-                self.MulticastSock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+                interface_ip: Optional[bytes] = None
+                if self._local_ip:
+                    try:
+                        interface_ip = socket.inet_aton(self._local_ip)
+                    except OSError:
+                        interface_ip = None
+
+                joined = False
+
+                if interface_ip is not None:
+                    try:
+                        self.MulticastSock.setsockopt(
+                            socket.IPPROTO_IP,
+                            socket.IP_MULTICAST_IF,
+                            interface_ip,
+                        )
+                    except OSError as exc:
+                        self.logger.debug(
+                            "Unable to select multicast interface %s: %s",
+                            self._local_ip,
+                            exc,
+                        )
+
+                    try:
+                        mreq = struct.pack('4s4s', group, interface_ip)
+                        self.MulticastSock.setsockopt(
+                            socket.IPPROTO_IP,
+                            socket.IP_ADD_MEMBERSHIP,
+                            mreq,
+                        )
+                    except OSError as exc:
+                        self.logger.warning(
+                            "Failed to join multicast group %s on interface %s",
+                            MulticastGroupIPaddr,
+                            self._local_ip,
+                        )
+                        self.logger.debug("Membership error details", exc_info=True)
+                    else:
+                        joined = True
+
+                if not joined:
+                    try:
+                        mreq_any = struct.pack('4sL', group, socket.INADDR_ANY)
+                        self.MulticastSock.setsockopt(
+                            socket.IPPROTO_IP,
+                            socket.IP_ADD_MEMBERSHIP,
+                            mreq_any,
+                        )
+                    except OSError as exc:
+                        logger.warn("Not possible to manage multicast group ip address: %s", exc)
+                        self.MulticastSock = None
+                    else:
+                        self.logger.debug(
+                            "Joined multicast group %s using INADDR_ANY fallback",
+                            MulticastGroupIPaddr,
+                        )
                 # print("DEBUG:5.9")
             except:
                 # print("DEBUG:5.10")
@@ -251,7 +350,7 @@ class Client(object):
         # print("DEBUG:5.18")
         if self.Sock is not None:
             # print("DEBUG:5.19")
-            self.Sock.send(raw(sessionpkt))
+            self.Sock.send(scapy_all.raw(sessionpkt))
             # print("DEBUG:5.20")
             reply_pkt = self.recv_enippkt()
             # print("DEBUG:5.21")
@@ -280,7 +379,7 @@ class Client(object):
             ENIP_SendUnitData_Item() / cippkt
         ])
         if self.Sock is not None:
-            self.Sock.send(raw(enippkt))
+            self.Sock.send(scapy_all.raw(enippkt))
 
     def send_rr_cm_cip(self, cippkt):
         """Encapsulate the CIP packet into a ConnectionManager packet"""
@@ -305,7 +404,7 @@ class Client(object):
         ])
         self.sequence_unit_cip += 1
         if self.Sock is not None:
-            self.Sock.send(raw(enippkt))
+            self.Sock.send(scapy_all.raw(enippkt))
 
     def recv_enippkt(self):
         """Receive an ENIP packet from the TCP socket"""
@@ -335,28 +434,54 @@ class Client(object):
         #wait CIP IO frame during Timeout
         try:
             (pktbytes, address) = self.MulticastSock.recvfrom(2000)
-
-            #extract ethernet/IP part
-            pkt_udp = ENIP_UDP(pktbytes)
-            # pkt_udp.show()
-
-            if(DEBUG):
-                pkt_udp.show()
-
-            #extract CIP IO part
-            pkgCIP_IO = CIP_IO(pkt_udp.items[1].payload.load)
-            # pkgCIP_IO.show()
-
-            if(DEBUG):
-                pkgCIP_IO.show()
-
-            self.logger.info("TGV2020: recv_UDP_ENIP_CIP_IO: CIP_IO packet is returned")
-            return pkgCIP_IO
-
-        except:
+        except socket.timeout:
             self.logger.warning("TGV2020: recv_UDP_ENIP_CIP_IO: NO CIP_IO packet is returned")
-            #self.MulticastSock.close()
             return None
+        except OSError as exc:
+            self.logger.warning(
+                "TGV2020: recv_UDP_ENIP_CIP_IO: socket error while waiting for CIP IO",
+                exc_info=self.logger.isEnabledFor(logging.DEBUG),
+            )
+            return None
+
+        try:
+            pkt_udp = ENIP_UDP(pktbytes)
+        except Exception:
+            self.logger.warning(
+                "TGV2020: recv_UDP_ENIP_CIP_IO: failed to decode ENIP UDP payload",
+                exc_info=self.logger.isEnabledFor(logging.DEBUG),
+            )
+            return None
+
+        if(DEBUG):
+            pkt_udp.show()
+
+        connected_item: Optional[ENIP_UDP_Item] = None
+        for item in getattr(pkt_udp, "items", []) or []:
+            if item.type_id in (0x00B1, "Connected_Data_Item"):
+                connected_item = item
+                break
+
+        if connected_item is None:
+            self.logger.debug(
+                "TGV2020: recv_UDP_ENIP_CIP_IO: ignoring packet without Connected_Data_Item"
+            )
+            return None
+
+        try:
+            pkgCIP_IO = CIP_IO(_item_payload_bytes(connected_item.payload))
+        except Exception:
+            self.logger.warning(
+                "TGV2020: recv_UDP_ENIP_CIP_IO: failed to decode CIP_IO payload",
+                exc_info=self.logger.isEnabledFor(logging.DEBUG),
+            )
+            return None
+
+        if(DEBUG):
+            pkgCIP_IO.show()
+
+        self.logger.info("TGV2020: recv_UDP_ENIP_CIP_IO: CIP_IO packet is returned")
+        return pkgCIP_IO
 
 
     def send_UDP_ENIP_CIP_IO(self,CIP_Sequence_Count=0,Header=0,AppData=None):
@@ -377,9 +502,18 @@ class Client(object):
         self.logger.info(f"TGV2020: send_UDP_ENIP_CIP_IO: sequence_CIP_IO {self.sequence_CIP_IO}")
         if self.Sock1 is not None:
             self.logger.info("TGV2020: send_UDP_ENIP_CIP_IO: Sending UDP_ENIP_CIP_IO through socket")
-            self.Sock1.send(raw(enippkt))
+            self.Sock1.send(scapy_all.raw(enippkt))
         else:
             self.logger.warning("TGV2020: send_UDP_ENIP_CIP_IO: Socket error: failed to send UDP_ENIP_CIP_IO")
+
+    def _cip_status_ok(self, cippkt, context):
+        status_code, status_obj = utils.cip_status_details(cippkt)
+        if status_code != 0:
+            logger.error("%s: %r", context, status_obj or status_code)
+            return False
+        if status_obj is None:
+            self.logger.debug("%s: CIP response omitted status; assuming success", context)
+        return True
 
     def forward_open(self):
         """Send a forward open request"""
@@ -394,8 +528,7 @@ class Client(object):
             return
         cippkt = resppkt[CIP]
     
-        if cippkt.status[0].status != 0:
-            logger.error("Failed to Forward Open CIP connection: %r", cippkt.status[0])
+        if not self._cip_status_ok(cippkt, "Failed to Forward Open CIP connection"):
             return False
         assert isinstance(cippkt.payload, CIP_RespForwardOpen)
         self.enip_connection_id_OT = cippkt.payload.OT_network_connection_id
@@ -412,10 +545,9 @@ class Client(object):
         resppkt = self.recv_enippkt()
         cippkt = resppkt[CIP]
         
-        if cippkt.status[0].status != 0:
-            logger.error("Failed to Forward Close CIP connection: %r", cippkt.status[0])
+        if not self._cip_status_ok(cippkt, "Failed to Forward Close CIP connection"):
             return False
-        
+
         return True
 
     def get_attribute(self, class_id, instance, attr):
@@ -431,8 +563,7 @@ class Client(object):
         resppkt = self.recv_enippkt()
         cippkt = resppkt[CIP]
         
-        if cippkt.status[0].status != 0:
-            logger.error("CIP get attribute error: %r", cippkt.status[0])
+        if not self._cip_status_ok(cippkt, "CIP get attribute error"):
             return
         resp_getattrlist = str(cippkt.payload)
         assert resp_getattrlist[:2] == b'\x01\x00'  # Attribute count must be 1
@@ -451,8 +582,7 @@ class Client(object):
         resppkt = self.recv_enippkt()
         cippkt = resppkt[CIP]
         
-        if cippkt.status[0].status != 0:
-            logger.error("CIP set attribute error: %r", cippkt.status[0])
+        if not self._cip_status_ok(cippkt, "CIP set attribute error"):
             return False
         return True
 
@@ -472,14 +602,14 @@ class Client(object):
             for i in range(0, len(data), 4):
                 inst_list.append(struct.unpack('<I', data[i:i + 4])[0])
             
-            cipstatus = resppkt[CIP].status[0].status
+            cipstatus, status_obj = utils.cip_status_details(resppkt[CIP])
             if cipstatus == 0:
                 return inst_list
             elif cipstatus == 6:
                 # Partial response, query again from the next instance
                 start_instance = inst_list[-1] + 1
             else:
-                logger.error("Error in Get Instance List response: %r", resppkt[CIP].status[0])
+                logger.error("Error in Get Instance List response: %r", status_obj or cipstatus)
                 return
 
     def read_full_tag(self, class_id, instance_id, total_size):
@@ -496,7 +626,7 @@ class Client(object):
                 return
             resppkt = self.recv_enippkt()
             
-            cipstatus = resppkt[CIP].status[0].status
+            cipstatus, status_obj = utils.cip_status_details(resppkt[CIP])
             received_data = str(resppkt[CIP].payload)
             if cipstatus == 0:
                 # Success
@@ -505,7 +635,7 @@ class Client(object):
                 # Partial response (size too big)
                 pass
             else:
-                logger.error("Error in Read Tag response: %r", resppkt[CIP].status[0])
+                logger.error("Error in Read Tag response: %r", status_obj or cipstatus)
                 return
 
             # Remember the chunk and continue
