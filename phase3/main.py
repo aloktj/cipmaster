@@ -68,6 +68,7 @@ class CLI:
         self.OT_packet = scapy_all.packet
         self.root = None
         self.config_file_names = []
+        self.config_file_map = {}
         self.cip_config_attempts = 0
         self.cip_config_selected = None
         self.overall_cip_valid = False
@@ -179,19 +180,16 @@ class CLI:
     
     
     def list_files_in_config_folder(self):
-        config_folder = "./conf/"
-        if not os.path.exists(config_folder) or not os.path.isdir(config_folder):
-            self.echo("Config folder does not exist or is not a directory!")
-            return
-        
-        self.config_file_names = os.listdir(config_folder)
+        self.config_file_map = cip_config.get_available_config_files()
+        self.config_file_names = sorted(self.config_file_map)
         if not self.config_file_names:
-            self.echo("No files found in the config folder")
+            self.echo("No CIP configuration files were found. Place XML files in the 'conf'"
+                      " directory or install a package that provides them.")
             return
-        
+
         self.echo("Detected Files in Config Folder:")
         self.echo("")
-        
+
         for idx, file in enumerate(self.config_file_names, start=1):
             self.echo(f" {idx}. {file}")
             self.last_cip_file_name = file
@@ -207,6 +205,7 @@ class CLI:
         self.echo("╚══════════════════════════════════════════╝")
         self.cip_file_count = 0
         self.config_file_names = []
+        self.config_file_map = {}
         self.last_cip_file_name = None
         self.list_files_in_config_folder()
         time.sleep(0.1)
@@ -230,14 +229,18 @@ class CLI:
             self.cip_test_flag = False
             return False
 
-        xml_filepath = os.path.join("./conf", self.cip_config_selected)
-        if not os.path.exists(xml_filepath):
+        try:
+            xml_filepath = cip_config.resolve_config_path(
+                self.cip_config_selected,
+                available=self.config_file_map,
+            )
+        except cip_config.ConfigNotFoundError:
             self.echo(f"CIP configuration '{self.cip_config_selected}' not found.")
             self.overall_cip_valid = False
             self.cip_test_flag = False
             return False
 
-        validation = cip_config.validate_cip_config(xml_filepath)
+        validation = cip_config.validate_cip_config(os.fspath(xml_filepath))
 
         self.overall_cip_valid = validation.overall_status
         self.cip_test_flag = validation.overall_status
