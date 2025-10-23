@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 import platform
+import re
 import subprocess
 from dataclasses import dataclass
 from typing import Optional, Sequence, Union
@@ -88,6 +89,67 @@ def communicate_with_target(
     return result == 0
 
 
+_MULTICAST_RANGE = ipaddress.IPv4Network("224.0.0.0/4")
+
+
+def _normalize_prefix_token(token: str) -> Optional[str]:
+    """Normalize CIDR-like tokens by padding missing octets."""
+
+    if "/" not in token:
+        return None
+    try:
+        base, prefix = token.split("/", 1)
+    except ValueError:
+        return None
+    base = base.strip()
+    prefix = prefix.strip()
+    if not base or not prefix.isdigit():
+        return None
+
+    while base.count(".") < 3:
+        base = f"{base}.0"
+    candidate = f"{base}/{prefix}"
+    try:
+        ipaddress.IPv4Address(base)
+    except ipaddress.AddressValueError:
+        return None
+    return candidate
+
+
+def _parse_multicast_route(stdout: str) -> Optional[str]:
+    """Return the first multicast-capable network found in the command output."""
+
+    ip_matches = re.compile(r"\b(\d+\.\d+\.\d+\.\d+)\b")
+
+    for raw_line in stdout.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        tokens = line.replace(",", " ").split()
+        for token in tokens:
+            normalized = _normalize_prefix_token(token)
+            if not normalized:
+                continue
+            try:
+                network = ipaddress.IPv4Network(normalized, strict=False)
+            except ValueError:
+                continue
+            if network.subnet_of(_MULTICAST_RANGE):
+                return str(network)
+
+        ips = ip_matches.findall(line)
+        if len(ips) >= 2:
+            try:
+                network = ipaddress.IPv4Network((ips[0], ips[1]), strict=False)
+            except ValueError:
+                continue
+            if network.subnet_of(_MULTICAST_RANGE):
+                return str(network)
+
+    return None
+
+
 def get_multicast_route(
     *,
     platform_service: Optional[PlatformService] = None,
@@ -101,8 +163,10 @@ def get_multicast_route(
         system = platform_service.system()
         if system == "Windows":
             result = subprocess_service.run(["route", "print"])
-        elif system in {"Linux", "Darwin"}:
-            result = subprocess_service.run(["ip", "route"])
+        elif system == "Linux":
+            result = subprocess_service.run(["ip", "route", "show", "table", "all"])
+        elif system == "Darwin":
+            result = subprocess_service.run(["netstat", "-rn"])
         else:
             logger.warning("Unsupported operating system for multicast route lookup")
             return None
@@ -110,10 +174,7 @@ def get_multicast_route(
         logger.warning("Failed to obtain multicast route: %s", exc)
         return None
 
-    for line in result.stdout.splitlines():
-        if "224.0.0.0/4" in line:
-            return "224.0.0.0/4"
-    return None
+    return _parse_multicast_route(result.stdout)
 
 
 def check_multicast_support(
