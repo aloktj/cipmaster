@@ -1,23 +1,61 @@
-Python 3.9.0 Installation:
-1. wget https://www.python.org/ftp/python/3.9.0/Python-3.9.0.tar.xz
-2. tar -xf Python-3.9.0.tar.xz
-3. cd Python-3.9.0
-4. ./configure --enable-optimizations
-5. make -j 2 (replace 2 with the number of cores in your processor)
-6. sudo make altinstall
-7. python3.9 --version
-[7] OUTPUT: Python 3.9.0
+========================================
+CIP Tool – Local Development Quick Start
+========================================
 
-Set Python3.9 as default python version:
-1. sudo update-alternatives --install /usr/bin/python python /usr/local/bin/python3.9 1
-[1] OUTPUT: update-alternatives: using /usr/local/bin/python3.9 to provide /usr/bin/python (python) in auto mode
-2. python --version
-[2] OUTPUT: Python 3.9.0
+The CIP CLI lives in ``phase3`` and expects Python 3.9+ with a working
+``scapy`` installation (raw socket support). Running the tool typically
+requires administrator/root privileges because it captures and injects
+EtherNet/IP packets.
 
-Virtualenv Installation using pip:
-1. python -m venv <environment_directory> # Example: python -m venv ./CIP Simulator/phase3/py3_venv (py3_venv is the environment name)
-2. source <environment_directory>/bin/activate
-3. python -m pip install --upgrade pip # Update the pip to latest inside virtual environment
-6. pip install -r requirements.txt # Install the project dependencies from the requirements.txt file into Virtualenv
-7. python main.py # Your environment is now set up. You can start running the tool
-8. deactivate # You can exit the Virtualenv using deactivate command
+Prerequisites
+-------------
+
+* Python 3.9 or newer (the refactor was validated against CPython 3.9).
+* ``libpcap``/``npcap`` and the ability to open raw sockets
+  (``sudo``/Administrator).
+* CIP XML configuration files stored in ``phase3/conf`` – the CLI will
+  prompt you to pick from the files in this directory at startup.
+
+Environment setup
+-----------------
+
+From the repository root:
+
+1. ``cd phase3``
+2. (Optional) Create a virtual environment: ``python3 -m venv .venv``
+3. Activate it (Linux/macOS ``source .venv/bin/activate``,
+   Windows ``.venv\Scripts\activate``)
+4. Upgrade ``pip`` inside the environment: ``python -m pip install --upgrade pip``
+5. Install dependencies: ``pip install -r Requirements.txt``
+
+Running the CLI
+---------------
+
+Execute the interactive tool from ``phase3`` (prepend ``sudo`` on Linux if
+``scapy`` complains about permissions):
+
+```
+python main.py
+```
+
+On startup the CLI will:
+
+1. Display a banner and prompt you to continue.
+2. Offer the list of CIP XML files found under ``conf/`` for validation and
+   dynamic packet-class construction.
+3. Optionally run the multicast and reachability checks (controlled by the
+   ``ENABLE_NETWORK`` flag near the top of ``main.py``).
+4. Launch the interactive command loop for session control once the
+   configuration and network checks pass.
+
+Logs and artifacts
+------------------
+
+* Logs are written to ``phase3/log/app.log`` (created automatically).
+* Temporary packet classes and validation results are in memory only; rerun the
+  CLI to refresh them after editing a configuration file.
+
+Deactivating the virtual environment
+------------------------------------
+
+When you are finished, exit the virtual environment with ``deactivate``.
