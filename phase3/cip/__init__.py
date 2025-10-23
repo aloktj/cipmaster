@@ -4,4 +4,5 @@ __all__ = [
     "config",
     "network",
     "session",
+    "ui",
 ]
