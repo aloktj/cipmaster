@@ -24,10 +24,13 @@ class _FakePayload:
     def __init__(self, data: bytes) -> None:
         self.load = data
 
+    def __bytes__(self) -> bytes:
+        return self.load
+
 
 class _FakeCIPIOPacket:
-    def __init__(self, data: bytes) -> None:
-        self.payload = _FakePayload(data)
+    def __init__(self, payload) -> None:  # type: ignore[no-untyped-def]
+        self.payload = payload
 
 
 class _FakeClient:
@@ -39,7 +42,7 @@ class _FakeClient:
         self._recv_calls += 1
         if self._recv_calls == 1:
             return None
-        return _FakeCIPIOPacket(b"\x07")
+        return _FakeCIPIOPacket(_FakePayload(b"\x07"))
 
     def send_UDP_ENIP_CIP_IO(self, *, CIP_Sequence_Count: int, Header: int, AppData: scapy_all.Packet) -> None:
         self.sent.append((CIP_Sequence_Count, Header, AppData))
@@ -77,3 +80,29 @@ def test_manage_io_communication_ignores_transient_timeouts():
     assert isinstance(app_data.MPU_CDateTimeSec, int)
     now = calendar.timegm(time.gmtime())
     assert now - 5 <= app_data.MPU_CDateTimeSec <= now + 5
+
+
+def test_manage_io_communication_accepts_scapy_payload():
+    session = CIPSession()
+
+    class _ClientWithPacket(_FakeClient):
+        def recv_UDP_ENIP_CIP_IO(self, debug: bool, timeout: float):  # type: ignore[override]
+            self._recv_calls += 1
+            return _FakeCIPIOPacket(DummyToPacket(value=9))
+
+    client = _ClientWithPacket()
+    updates = []
+
+    def update_to_packet(pkt: DummyToPacket) -> None:
+        updates.append(pkt.value)
+        session._stop_event.set()  # type: ignore[attr-defined]
+
+    session.manage_io_communication(
+        client,
+        to_packet_class=DummyToPacket,
+        ot_packet=DummyOtPacket(),
+        heartbeat_callback=lambda *_: None,
+        update_to_packet=update_to_packet,
+    )
+
+    assert updates == [9]

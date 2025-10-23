@@ -6,6 +6,8 @@
 import logging
 import socket
 import struct
+from typing import Any, Optional
+
 from scapy import all as scapy_all
 import os
 
@@ -35,6 +37,29 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     filename='./log/app.log'
 )
+
+
+def _item_payload_bytes(payload: Any) -> bytes:
+    """Return the raw bytes carried by an ENIP connected data item payload."""
+
+    if payload is None:
+        raise ValueError("empty payload")
+
+    if isinstance(payload, (bytes, bytearray)):
+        return bytes(payload)
+
+    load = getattr(payload, "load", None)
+    if isinstance(load, (bytes, bytearray)):
+        return bytes(load)
+
+    original = getattr(payload, "original", None)
+    if isinstance(original, (bytes, bytearray)):
+        return bytes(original)
+
+    if isinstance(payload, scapy_all.Packet):
+        return bytes(payload)
+
+    return bytes(payload)
 
 class AS_MPU_DCUi_DATA(scapy_all.Packet):
     """Common Industrial Protocol, I/O input
@@ -336,28 +361,54 @@ class Client(object):
         #wait CIP IO frame during Timeout
         try:
             (pktbytes, address) = self.MulticastSock.recvfrom(2000)
-
-            #extract ethernet/IP part
-            pkt_udp = ENIP_UDP(pktbytes)
-            # pkt_udp.show()
-
-            if(DEBUG):
-                pkt_udp.show()
-
-            #extract CIP IO part
-            pkgCIP_IO = CIP_IO(pkt_udp.items[1].payload.load)
-            # pkgCIP_IO.show()
-
-            if(DEBUG):
-                pkgCIP_IO.show()
-
-            self.logger.info("TGV2020: recv_UDP_ENIP_CIP_IO: CIP_IO packet is returned")
-            return pkgCIP_IO
-
-        except:
+        except socket.timeout:
             self.logger.warning("TGV2020: recv_UDP_ENIP_CIP_IO: NO CIP_IO packet is returned")
-            #self.MulticastSock.close()
             return None
+        except OSError as exc:
+            self.logger.warning(
+                "TGV2020: recv_UDP_ENIP_CIP_IO: socket error while waiting for CIP IO",
+                exc_info=self.logger.isEnabledFor(logging.DEBUG),
+            )
+            return None
+
+        try:
+            pkt_udp = ENIP_UDP(pktbytes)
+        except Exception:
+            self.logger.warning(
+                "TGV2020: recv_UDP_ENIP_CIP_IO: failed to decode ENIP UDP payload",
+                exc_info=self.logger.isEnabledFor(logging.DEBUG),
+            )
+            return None
+
+        if(DEBUG):
+            pkt_udp.show()
+
+        connected_item: Optional[ENIP_UDP_Item] = None
+        for item in getattr(pkt_udp, "items", []) or []:
+            if item.type_id in (0x00B1, "Connected_Data_Item"):
+                connected_item = item
+                break
+
+        if connected_item is None:
+            self.logger.debug(
+                "TGV2020: recv_UDP_ENIP_CIP_IO: ignoring packet without Connected_Data_Item"
+            )
+            return None
+
+        try:
+            pkgCIP_IO = CIP_IO(_item_payload_bytes(connected_item.payload))
+        except Exception:
+            self.logger.warning(
+                "TGV2020: recv_UDP_ENIP_CIP_IO: failed to decode CIP_IO payload",
+                exc_info=self.logger.isEnabledFor(logging.DEBUG),
+            )
+            return None
+
+        if(DEBUG):
+            pkgCIP_IO.show()
+
+        self.logger.info("TGV2020: recv_UDP_ENIP_CIP_IO: CIP_IO packet is returned")
+        return pkgCIP_IO
 
 
     def send_UDP_ENIP_CIP_IO(self,CIP_Sequence_Count=0,Header=0,AppData=None):
