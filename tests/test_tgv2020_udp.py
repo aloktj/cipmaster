@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import socket
+import struct
+
+import pytest
 
 from scapy import all as scapy_all
 
 from thirdparty.scapy_cip_enip import tgv2020
+from thirdparty.scapy_cip_enip import enip_tcp
 from thirdparty.scapy_cip_enip.enip_udp import (
     CIP_IO,
     ENIP_UDP,
@@ -92,3 +96,116 @@ def test_recv_udp_enip_cip_io_returns_none_without_connected_item():
     client = _client_with_frames([extra_only])
 
     assert client.recv_UDP_ENIP_CIP_IO(False, 0.5) is None
+
+
+def _register_session_response() -> bytes:
+    return bytes(
+        enip_tcp.ENIP_TCP(command_id=0x0065, session=0x1234)
+        / enip_tcp.ENIP_RegisterSession()
+    )
+
+
+class _FakeTcpSocket:
+    def __init__(self, *, local_ip: str | None) -> None:
+        self._local_ip = local_ip
+        self.sent: list[bytes] = []
+
+    def send(self, data: bytes) -> None:
+        self.sent.append(data)
+
+    def recv(self, size: int) -> bytes:
+        return _register_session_response()
+
+    def getsockname(self) -> tuple[str, int]:
+        if self._local_ip is None:
+            raise OSError("no interface")
+        return self._local_ip, 40000
+
+    def close(self) -> None:  # pragma: no cover - not used in tests
+        pass
+
+
+class _FakeUdpSocket:
+    def __init__(self) -> None:
+        self.options: list[tuple[int, int, bytes]] = []
+        self.bound: tuple[str, int] | None = None
+        self.connected: tuple[str, int] | None = None
+
+    def setsockopt(self, level: int, option: int, value) -> None:
+        if isinstance(value, memoryview):  # pragma: no cover - defensive
+            value = value.tobytes()
+        self.options.append((level, option, value))
+
+    def bind(self, address: tuple[str, int]) -> None:
+        self.bound = address
+
+    def connect(self, address: tuple[str, int]) -> None:
+        self.connected = address
+
+    def close(self) -> None:  # pragma: no cover - not used in tests
+        pass
+
+
+@pytest.fixture
+def _patched_sockets(monkeypatch):
+    sockets: list[_FakeUdpSocket] = []
+
+    def fake_socket(family: int, type_: int) -> _FakeUdpSocket:
+        assert family == socket.AF_INET
+        assert type_ == socket.SOCK_DGRAM
+        sock = _FakeUdpSocket()
+        sockets.append(sock)
+        return sock
+
+    monkeypatch.setattr(tgv2020.socket, "socket", fake_socket)
+    return sockets
+
+
+def test_client_joins_multicast_on_detected_interface(monkeypatch, _patched_sockets):
+    tcp_socket = _FakeTcpSocket(local_ip="172.16.0.10")
+    monkeypatch.setattr(tgv2020.socket, "create_connection", lambda addr: tcp_socket)
+
+    client = tgv2020.Client(
+        IPAddr="172.16.0.230",
+        MulticastGroupIPaddr="239.192.29.163",
+    )
+
+    multicast_sock = _patched_sockets[0]
+    assert multicast_sock.bound == ("", 2222)
+
+    membership_calls = []
+    for level, option, value in multicast_sock.options:
+        if level == socket.IPPROTO_IP and option == socket.IP_ADD_MEMBERSHIP:
+            assert isinstance(value, (bytes, bytearray))
+            membership_calls.append(bytes(value))
+    assert membership_calls == [
+        struct.pack(
+            "4s4s",
+            socket.inet_aton("239.192.29.163"),
+            socket.inet_aton("172.16.0.10"),
+        )
+    ]
+
+    client.close()
+
+
+def test_client_falls_back_to_any_when_interface_unknown(monkeypatch, _patched_sockets):
+    tcp_socket = _FakeTcpSocket(local_ip=None)
+    monkeypatch.setattr(tgv2020.socket, "create_connection", lambda addr: tcp_socket)
+
+    client = tgv2020.Client(
+        IPAddr="172.16.0.230",
+        MulticastGroupIPaddr="239.192.29.163",
+    )
+
+    multicast_sock = _patched_sockets[0]
+    membership_calls = []
+    for level, option, value in multicast_sock.options:
+        if level == socket.IPPROTO_IP and option == socket.IP_ADD_MEMBERSHIP:
+            assert isinstance(value, (bytes, bytearray))
+            membership_calls.append(bytes(value))
+    assert membership_calls[-1] == struct.pack(
+        "4sL", socket.inet_aton("239.192.29.163"), socket.INADDR_ANY
+    )
+
+    client.close()
