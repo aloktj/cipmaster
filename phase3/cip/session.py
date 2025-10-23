@@ -88,9 +88,10 @@ class CIPSession:
                     update_to_packet=update_to_packet,
                 )
 
-                if not self.error_occurred:
+                if not self.error_occurred and self._client is not None:
                     try:
-                        self._client.forward_close()
+                        if getattr(self._client, "connected", False):
+                            self._client.forward_close()
                     except Exception:  # pragma: no cover - best effort cleanup
                         logger.exception("Failed to close CIP session cleanly")
             except Exception:  # pragma: no cover - defensive
@@ -102,25 +103,20 @@ class CIPSession:
                         self._client.close()
                     except Exception:
                         logger.exception("Failed to close CIP client")
+                    finally:
+                        self._client = None
 
         self._thread = threading.Thread(target=_run, daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
         self._stop_event.set()
-        if self._client is not None:
-            try:
-                if self._client.connected:
-                    self._client.forward_close()
-            except Exception:
-                logger.exception("Failed to forward close CIP session during stop")
-            finally:
-                try:
-                    self._client.close()
-                except Exception:
-                    logger.exception("Failed to close CIP client during stop")
         if self._thread is not None:
-            self._thread.join(timeout=1)
+            self._thread.join(timeout=5)
+            if self._thread.is_alive():
+                logger.warning("CIP session thread did not terminate cleanly")
+            self._thread = None
+        self._client = None
 
     def manage_io_communication(
         self,
@@ -141,13 +137,17 @@ class CIPSession:
             pkg_cip_io = client.recv_UDP_ENIP_CIP_IO(self._debug_cip_frames, 0.5)
 
             if pkg_cip_io is None:
-                logger.warning("Failed to decode CIP IO frame")
-                error_occurred = True
-                break
+                logger.debug("No CIP IO packet received; retrying")
+                continue
+
+            payload_bytes = bytes(getattr(pkg_cip_io, "payload", b""))
+            if not payload_bytes:
+                logger.debug("Received CIP IO packet with empty payload; retrying")
+                continue
 
             try:
                 with self._lock:
-                    to_packet = to_packet_class(pkg_cip_io.payload.load)
+                    to_packet = to_packet_class(payload_bytes)
                 update_to_packet(to_packet)
             except Exception:
                 logger.exception("Unable to parse TO packet from CIP IO payload")
