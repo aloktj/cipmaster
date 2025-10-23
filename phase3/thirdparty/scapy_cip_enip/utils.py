@@ -24,17 +24,25 @@ from scapy import all as scapy_all
 
 
 def hexdump(data, columns=16, indentlvl=""):
-    """Return the hexadecimal representation of the data"""
+    """Return the hexadecimal representation of the data."""
 
     def do_line(line):
         return (
-            indentlvl +
-            " ".join("{:02x}".format(ord(b)) for b in line) +
-            "   " * (columns - len(line)) +
-            "  " +
-            "".join(b if 32 <= ord(b) < 127 else "." for b in line))
+            indentlvl
+            + " ".join(f"{byte:02x}" for byte in line)
+            + "   " * (columns - len(line))
+            + "  "
+            + "".join(chr(byte) if 32 <= byte < 127 else "." for byte in line)
+        )
 
-    return "\n".join(do_line(data[i:i + columns]) for i in range(0, len(data), columns))
+    if isinstance(data, str):
+        data_bytes = data.encode("utf-8", errors="replace")
+    else:
+        data_bytes = bytes(data)
+
+    return "\n".join(
+        do_line(data_bytes[i : i + columns]) for i in range(0, len(data_bytes), columns)
+    )
 
 
 class LEShortLenField(scapy_all.FieldLenField):

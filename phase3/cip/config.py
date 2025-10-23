@@ -5,8 +5,11 @@ from __future__ import annotations
 import operator
 import os
 import xml.etree.ElementTree as ET
+from contextlib import ExitStack
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple, Type
+from importlib import resources
+from pathlib import Path
+from typing import Dict, Iterable, List, Mapping, Optional, Tuple, Type
 
 from scapy import all as scapy_all
 
@@ -29,6 +32,78 @@ class CIPValidationResult:
     root: Optional[ET.Element] = None
     ot_info: Optional[PacketClassInfo] = None
     to_info: Optional[PacketClassInfo] = None
+
+
+class ConfigNotFoundError(FileNotFoundError):
+    """Raised when no CIP configuration directory can be located."""
+
+
+def iter_config_directories() -> Iterable[Path]:
+    """Yield candidate directories that may contain CIP XML definitions.
+
+    The search order is:
+
+    1. Installed package resources under the ``conf`` package when the
+       project has been installed via ``pip install``.
+    2. The ``conf`` directory that ships with the source checkout. This keeps
+       development and editable installations working without extra steps.
+    """
+
+    with ExitStack() as stack:
+        try:
+            package_files = resources.files("conf")
+        except ModuleNotFoundError:
+            package_files = None
+
+        if package_files is not None:
+            package_path = stack.enter_context(resources.as_file(package_files))
+            yield Path(package_path)
+
+        repo_path = Path(__file__).resolve().parent.parent / "conf"
+        if repo_path.exists():
+            yield repo_path
+
+
+def get_available_config_files() -> Dict[str, Path]:
+    """Return a mapping of available CIP configuration file names to paths."""
+
+    available: Dict[str, Path] = {}
+    for directory in iter_config_directories():
+        if not directory.exists():
+            continue
+        for file in directory.iterdir():
+            if file.is_file() and file.suffix.lower() == ".xml":
+                available.setdefault(file.name, file)
+    return available
+
+
+def resolve_config_path(
+    filename: str,
+    *,
+    available: Optional[Mapping[str, Path]] = None,
+) -> Path:
+    """Return the absolute path to a configuration file.
+
+    Parameters
+    ----------
+    filename:
+        The configuration file name selected by the user.
+    available:
+        Optional pre-computed mapping produced by
+        :func:`get_available_config_files`. Supplying this avoids repeating the
+        directory scan when the caller already has the data.
+
+    Raises
+    ------
+    ConfigNotFoundError
+        If the requested configuration file cannot be located.
+    """
+
+    files = available or get_available_config_files()
+    try:
+        return files[filename]
+    except KeyError as exc:
+        raise ConfigNotFoundError(f"CIP configuration '{filename}' not found") from exc
 
 
 def create_packet_dict(fields_dict: List[Dict[str, int]], assembly_size: int) -> Dict[int, List[Dict[str, int]]]:
@@ -219,7 +294,7 @@ def create_packet_class(assembly_element: ET.Element) -> Tuple[Optional[Type[sca
         elif field_type == "real":
             field_desc.append(scapy_all.IEEEFloatField(field_id, 0))
         elif field_type == "string":
-            field_desc.append(scapy_all.StrFixedLenField(field_id, "", int(field_length)))
+            field_desc.append(scapy_all.StrFixedLenField(field_id, b"", int(field_length)))
         elif field_type == "udint":
             field_desc.append(scapy_all.LEIntField(field_id, 0))
         elif field_type == "uint":
