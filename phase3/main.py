@@ -14,10 +14,13 @@ from datetime import datetime
 from struct import pack, unpack
 import binascii
 import struct
+from dataclasses import dataclass
+from typing import Any, Optional
 
 from cip import config as cip_config
 from cip import network as cip_network
 from cip import session as cip_session
+from cip.ui import ClickUserInterface, UserInterface
 
 
 # Create log directory if it doesn't exist
@@ -34,11 +37,30 @@ logging.basicConfig(
 ENABLE_NETWORK = True
 DEBUG_CIP_FRAMES=bool(False)
 
+
+@dataclass
+class RunConfiguration:
+    """Configuration flags for scripted runs of the CLI."""
+
+    auto_continue: Optional[bool] = None
+    cip_filename: Optional[str] = None
+    target_ip: Optional[str] = None
+    multicast_address: Optional[str] = None
+    enable_network: Optional[bool] = None
+
+
 class CLI:
     lock = threading.Lock()
-    
-    def __init__(self):
+
+    def __init__(
+        self,
+        *,
+        ui: Optional[UserInterface] = None,
+        network_configurator=cip_network.config_network,
+    ):
         self.logger = logging.getLogger(self.__class__.__name__)
+        self.ui = ui or ClickUserInterface()
+        self.network_configurator = network_configurator
         self.ip_address = None
         self.cip_xml_path = None
         self.net_test_flag = False
@@ -73,14 +95,26 @@ class CLI:
         self.ot_eo_assemblies = None
         self.to_assemblies = None
         self.session = cip_session.CIPSession(lock=self.lock, debug_cip_frames=DEBUG_CIP_FRAMES)
-        
-        
-        
-        
+
+
+
+
     ###-------------------------------------------------------------###
     ###                     Header                                  ###
     ###-------------------------------------------------------------###
-    
+
+    def prompt(self, text: str, **kwargs):
+        return self.ui.prompt(text, **kwargs)
+
+    def confirm(self, text: str, **kwargs) -> bool:
+        return self.ui.confirm(text, **kwargs)
+
+    def echo(self, message: str = "", *, nl: bool = True) -> None:
+        self.ui.echo(message, nl=nl)
+
+    def write(self, *args, sep: str = " ", end: str = "\n") -> None:
+        self.ui.write(*args, sep=sep, end=end)
+
     def spinning_cursor(self):
         while True:
             for cursor in '|/-\\':
@@ -102,7 +136,7 @@ class CLI:
         sys.stdout.flush()
         
     def progress_bar(self, message, duration):
-        click.echo("\n")
+        self.echo("\n")
         total_ticks = 75  # Number of ticks in the progress bar
         start_time = time.time()
         while time.time() - start_time < duration:
@@ -115,26 +149,26 @@ class CLI:
             sys.stdout.flush()
             time.sleep(0.1)
         sys.stdout.write('\n')
-        click.echo("\n")
+        self.echo("\n")
     
     
     def display_banner(self):
         table_width = 75
         
-        click.echo("\n\n")
+        self.echo("\n\n")
         banner_text = pyfiglet.figlet_format("\t\t\t\t\t CIP Tool \t\t\t\t\t", font="slant")
         colored_banner = colored(banner_text, color="green")
         
         banner_table = [[colored_banner]]
-        click.echo(tabulate(banner_table, tablefmt="plain"))
+        self.echo(tabulate(banner_table, tablefmt="plain"))
         
         # Additional information
-        print(*"=" * 100, sep="")
-        print(("Welcome to CIP Tool").center(table_width))
-        print(("Version: 3.0").center(table_width))
-        print(("Author: Alok T J").center(table_width))
-        print(("Copyright (c) 2024 Wabtec (based on plc.py)").center(table_width))
-        print(*"=" * 100, sep="")
+        self.write(*"=" * 100, sep="")
+        self.write(("Welcome to CIP Tool").center(table_width))
+        self.write(("Version: 3.0").center(table_width))
+        self.write(("Author: Alok T J").center(table_width))
+        self.write(("Copyright (c) 2024 Wabtec (based on plc.py)").center(table_width))
+        self.write(*"=" * 100, sep="")
     
     ###-------------------------------------------------------------###
     ###                     Multicast Route                         ###
@@ -149,54 +183,62 @@ class CLI:
     def list_files_in_config_folder(self):
         config_folder = "./conf/"
         if not os.path.exists(config_folder) or not os.path.isdir(config_folder):
-            click.echo("Config folder does not exist or is not a directory!")
+            self.echo("Config folder does not exist or is not a directory!")
             return
         
         self.config_file_names = os.listdir(config_folder)
         if not self.config_file_names:
-            click.echo("No files found in the config folder")
+            self.echo("No files found in the config folder")
             return
         
-        click.echo("Detected Files in Config Folder:")
-        click.echo("")
+        self.echo("Detected Files in Config Folder:")
+        self.echo("")
         
         for idx, file in enumerate(self.config_file_names, start=1):
-            click.echo(f" {idx}. {file}")
+            self.echo(f" {idx}. {file}")
             self.last_cip_file_name = file
             self.cip_file_count += 1
         
-        click.echo("")
+        self.echo("")
     
-    def cip_config(self):
+    def cip_config(self, preselected_filename: Optional[str] = None):
         self.logger.info("Executing cip_config function")
 
-        click.echo("╔══════════════════════════════════════════╗")
-        click.echo("║          CIP Configuration               ║")
-        click.echo("╚══════════════════════════════════════════╝")
+        self.echo("╔══════════════════════════════════════════╗")
+        self.echo("║          CIP Configuration               ║")
+        self.echo("╚══════════════════════════════════════════╝")
         self.cip_file_count = 0
         self.config_file_names = []
         self.last_cip_file_name = None
         self.list_files_in_config_folder()
         time.sleep(0.1)
 
-        if self.cip_file_count > 1:
+        if preselected_filename is not None and self.cip_config_attempts == 0:
+            self.cip_config_selected = preselected_filename
+        elif self.cip_file_count > 1:
             if self.cip_config_attempts == 0:
-                self.cip_config_selected = click.prompt("CIP Configuration Filename")
-                click.echo("")
-            elif self.cip_config_attempts > 0 and click.confirm('Do you want to change CIP Configuration?', default=True):
-                self.cip_config_selected = click.prompt("CIP Configuration Filename")
+                self.cip_config_selected = self.prompt("CIP Configuration Filename")
+                self.echo("")
+            elif self.cip_config_attempts > 0 and self.confirm('Do you want to change CIP Configuration?', default=True):
+                self.cip_config_selected = self.prompt("CIP Configuration Filename")
         else:
             self.cip_config_selected = self.last_cip_file_name
 
         self.cip_config_attempts += 1
 
         if not self.cip_config_selected:
-            click.echo("No CIP configuration file available.")
+            self.echo("No CIP configuration file available.")
             self.overall_cip_valid = False
             self.cip_test_flag = False
             return False
 
         xml_filepath = os.path.join("./conf", self.cip_config_selected)
+        if not os.path.exists(xml_filepath):
+            self.echo(f"CIP configuration '{self.cip_config_selected}' not found.")
+            self.overall_cip_valid = False
+            self.cip_test_flag = False
+            return False
+
         validation = cip_config.validate_cip_config(xml_filepath)
 
         self.overall_cip_valid = validation.overall_status
@@ -209,8 +251,8 @@ class CLI:
             self.OT_packet_class = validation.ot_info.packet_class
             self.OT_packet = self.OT_packet_class()
             expected = validation.ot_info.assembly_size // 8
-            click.echo(f"Length of OT Assembly Expected: {expected}")
-            click.echo(f"Length of OT Assembly Formed: {len(self.OT_packet)}")
+            self.echo(f"Length of OT Assembly Expected: {expected}")
+            self.echo(f"Length of OT Assembly Formed: {len(self.OT_packet)}")
         else:
             self.OT_packet_class = None
 
@@ -218,26 +260,34 @@ class CLI:
             self.TO_packet_class = validation.to_info.packet_class
             self.TO_packet = self.TO_packet_class()
             expected = validation.to_info.assembly_size // 8
-            click.echo(f"Length of TO Assembly Expected: {expected}")
-            click.echo(f"Length of TO Assembly Formed: {len(self.TO_packet)}")
+            self.echo(f"Length of TO Assembly Expected: {expected}")
+            self.echo(f"Length of TO Assembly Formed: {len(self.TO_packet)}")
         else:
             self.TO_packet_class = None
 
         table = tabulate(validation.results, headers=["Test Case", "Status"], tablefmt="fancy_grid")
-        click.echo(table)
-        click.echo("")
+        self.echo(table)
+        self.echo("")
 
         if not validation.overall_status:
-            click.echo("Some tests failed. Restarting CIP Tool.")
+            self.echo("Some tests failed. Restarting CIP Tool.")
 
         return validation.overall_status
 
-    def config_network(self):
+    def config_network(
+        self,
+        ip_address: Optional[str] = None,
+        multicast_address: Optional[str] = None,
+        *,
+        ping_command: Optional[cip_network.CommandType] = None,
+        platform_service: Optional[cip_network.PlatformService] = None,
+        subprocess_service: Optional[cip_network.SubprocessService] = None,
+    ):
         self.logger.info("Executing config_network function")
-        click.echo("╔══════════════════════════════════════════╗")
-        click.echo("║        Network Configuration             ║")
-        click.echo("╚══════════════════════════════════════════╝")
-        click.echo("")
+        self.echo("╔══════════════════════════════════════════╗")
+        self.echo("║        Network Configuration             ║")
+        self.echo("╚══════════════════════════════════════════╝")
+        self.echo("")
 
         self.net_test_flag = False
         self.multicast_test_status = False
@@ -246,17 +296,31 @@ class CLI:
 
         time.sleep(0.1)
 
-        self.ip_address = click.prompt("Enter Target IP Address", default='10.0.1.1')
-        self.user_multicast_address = click.prompt(
-            "Enter the multicast group joining IP address",
-            default='239.192.1.3',
-            type=str,
+        self.ip_address = (
+            ip_address
+            if ip_address is not None
+            else self.prompt("Enter Target IP Address", default='10.0.1.1')
+        )
+        self.user_multicast_address = (
+            multicast_address
+            if multicast_address is not None
+            else self.prompt(
+                "Enter the multicast group joining IP address",
+                default='239.192.1.3',
+                type=str,
+            )
         )
 
-        click.echo("\n===== Testing Communication with Target =====")
+        self.echo("\n===== Testing Communication with Target =====")
         time.sleep(1)
 
-        network_result = cip_network.config_network(self.ip_address, self.user_multicast_address)
+        network_result = self.network_configurator(
+            self.ip_address,
+            self.user_multicast_address,
+            ping_command=ping_command,
+            platform_service=platform_service,
+            subprocess_service=subprocess_service,
+        )
 
         self.net_test_flag = network_result.reachable
         self.multicast_test_status = network_result.multicast_supported
@@ -270,24 +334,24 @@ class CLI:
             ["Mutlicast route Compatibity", "OK" if network_result.route_exists else "FAILED"],
         ]
 
-        click.echo("\n" + tabulate(results, headers="firstrow", tablefmt="fancy_grid"))
-        click.echo("")
+        self.echo("\n" + tabulate(results, headers="firstrow", tablefmt="fancy_grid"))
+        self.echo("")
 
         if network_result.reachable and network_result.multicast_supported:
             time.sleep(0.1)
             return True
 
-        click.echo("===== Failed Network Configuration Test =====")
-        click.echo("")
-        click.echo("=============================================")
-        click.echo("=====        Restarting CIP Tool        =====")
-        click.echo("=============================================")
+        self.echo("===== Failed Network Configuration Test =====")
+        self.echo("")
+        self.echo("=============================================")
+        self.echo("=====        Restarting CIP Tool        =====")
+        self.echo("=============================================")
         return False
 
                 
     def help_menu(self):
         self.logger.info("Executing help_menu function")
-        click.echo("\nAvailable commands:")
+        self.echo("\nAvailable commands:")
         
         commands = [
             ("start", "Stop Communication"),
@@ -330,7 +394,7 @@ class CLI:
         
         headers = ["Command Usage", "Command Description"]
         table = tabulate(commands, headers=headers, tablefmt="fancy_grid", colalign=("left", "left"))
-        click.echo(table)
+        self.echo(table)
     
 
 
@@ -397,30 +461,30 @@ class CLI:
                     reversed_byte_array = byte_array[::-1]
                     bE_field_value = struct.unpack('f', reversed_byte_array)[0] #Big endian field value
                     setattr(self.OT_packet, field_name, bE_field_value)
-                    print(f"Set {field_name} to {field_value}")
+                    self.write(f"Set {field_name} to {field_value}")
                 except ValueError:
-                    print(f"Field {field_name} expects a float value.")
+                    self.write(f"Field {field_name} expects a float value.")
             elif isinstance(field, scapy_all.BitField):
                 if field_value in ['0', '1']:
                     setattr(self.OT_packet, field_name, int(field_value))
-                    print(f"Set {field_name} to {field_value}")
+                    self.write(f"Set {field_name} to {field_value}")
                 else:
-                    print(f"Field {field_name} expects a value of either '0' or '1'.")
+                    self.write(f"Field {field_name} expects a value of either '0' or '1'.")
             elif isinstance(field, scapy_all.ByteField):
                 if field_value.startswith('0x') and len(field_value) == 4 and all(
                         c in string.hexdigits for c in field_value[2:]):
                     int_value = int(field_value, 16)
                     setattr(self.OT_packet, field_name, int_value)
-                    print(f"Set {field_name} to {field_value}")
+                    self.write(f"Set {field_name} to {field_value}")
                 elif field_value.isdigit():
                     int_value = int(field_value)
                     if 0 <= int_value <= 0xFF:
                         setattr(self.OT_packet, field_name, int_value)
-                        print(f"Set {field_name} to {field_value}")
+                        self.write(f"Set {field_name} to {field_value}")
                     else:
-                        print(f"Field {field_name} expects an integer value between 0 and 255.")
+                        self.write(f"Field {field_name} expects an integer value between 0 and 255.")
                 else:
-                    print(
+                    self.write(
                         f"Field {field_name} expects an integer value or a hexadecimal value in the format '0x00' to '0xFF'.")
             
             elif isinstance(field, scapy_all.ShortField):
@@ -428,7 +492,7 @@ class CLI:
                     c in string.hexdigits for c in field_value[2:]):
                     int_value = int(field_value, 16)
                     setattr(self.OT_packet, field_name, int(int_value.to_bytes(2, byteorder='big')))
-                    print(f"Set {field_name} to {field_value}")
+                    self.write(f"Set {field_name} to {field_value}")
                 elif field_value.isdigit():
                     int_value = int(field_value)
                     if 0 <= int_value <= 0xFFFF:
@@ -438,12 +502,12 @@ class CLI:
                             converted_value = int.from_bytes(reversed_byte_array, byteorder='big')
                             setattr(self.OT_packet, field_name, converted_value)
                         except:
-                            print("Error in setting ShortField")
-                        print(f"Set {field_name} to {field_value}")
+                            self.write("Error in setting ShortField")
+                        self.write(f"Set {field_name} to {field_value}")
                     else:
-                        print(f"Field {field_name} expects an integer value between 0 and 65535.")
+                        self.write(f"Field {field_name} expects an integer value between 0 and 65535.")
                 else:
-                    print(f"Field {field_name} expects an integer value or a hexadecimal value in the format '0x0000' to '0xFFFF'.")
+                    self.write(f"Field {field_name} expects an integer value or a hexadecimal value in the format '0x0000' to '0xFFFF'.")
             
             ###
             elif isinstance(field, scapy_all.LEShortField):
@@ -453,21 +517,21 @@ class CLI:
 
                     int_value = int(field_value, 16)
                     setattr(self.OT_packet, field_name, int_value.to_bytes(2, byteorder='big'))
-                    print(f"Set {field_name} to {field_value}")
+                    self.write(f"Set {field_name} to {field_value}")
 
                 elif field_value.isdigit():
 
                     int_value = int(field_value)
                     if 0 <= int_value <= 0xFFFF:
                         setattr(self.OT_packet, field_name, int_value) 
-                        print(f"Set {field_name} to {field_value}")
+                        self.write(f"Set {field_name} to {field_value}")
 
                     else:
-                        print(f"Field {field_name} expects an integer value between 0 and 65535.")
+                        self.write(f"Field {field_name} expects an integer value between 0 and 65535.")
 
                 else:
 
-                    print(f"Field {field_name} expects an integer value or a hexadecimal value in the format '0x0000' to '0xFFFF'.")
+                    self.write(f"Field {field_name} expects an integer value or a hexadecimal value in the format '0x0000' to '0xFFFF'.")
                             
             ###
             
@@ -481,11 +545,11 @@ class CLI:
 
                         setattr(self.OT_packet, field_name, int_value)
 
-                        print(f"Set {field_name} to {field_value}")
+                        self.write(f"Set {field_name} to {field_value}")
 
                     else:
 
-                        print("Value out of range for IEEEDoubleField")
+                        self.write("Value out of range for IEEEDoubleField")
 
                 elif field_value.isdigit():
 
@@ -495,15 +559,15 @@ class CLI:
 
                         setattr(self.OT_packet, field_name, int_value)  
 
-                        print(f"Set {field_name} to {field_value}")
+                        self.write(f"Set {field_name} to {field_value}")
 
                     else:
 
-                        print("Value out of range for IEEEDoubleField")
+                        self.write("Value out of range for IEEEDoubleField")
 
                 else:
 
-                    print("Field value must be a number for IEEEDoubleField")
+                    self.write("Field value must be a number for IEEEDoubleField")
             
             
             elif isinstance(field, scapy_all.StrFixedLenField):
@@ -511,22 +575,22 @@ class CLI:
                     
                     field_value1 = field_value
                     field_value = field_value.encode() # Convert String to Bytes
-                    print(field_value)
+                    self.write(field_value)
                 if not isinstance(field_value, bytes):
-                    print(f"Field values is not byte type")
+                    self.write(f"Field values is not byte type")
                 field_value1 = field_value
                 # field_bytes = field_value.rjust(field.length_from(self.OT_packet), b'\x00')
                                 
                 if len(field_value) <= field.length_from(self.OT_packet):
                     setattr(self.OT_packet, field_name, field_value)
-                    print(f"Set {field_name} to {field_value}")
+                    self.write(f"Set {field_name} to {field_value}")
                 else:
-                    print(f"Field {field_name} expects a string of length up to {field.length_from(self.OT_packet)}.")
+                    self.write(f"Field {field_name} expects a string of length up to {field.length_from(self.OT_packet)}.")
             else:
-                print(f"Field {field_name} is not of type IEEEFloatField, BitField, ByteField, or StrFixedLenField and "
+                self.write(f"Field {field_name} is not of type IEEEFloatField, BitField, ByteField, or StrFixedLenField and "
                       f"cannot be set.")
         else:
-            print(f"Field {field_name} not found.")
+            self.write(f"Field {field_name} not found.")
             
         self.lock.release()
         
@@ -538,41 +602,41 @@ class CLI:
             field = getattr(self.OT_packet.__class__, field_name)
             if isinstance(field, scapy_all.IEEEFloatField) or isinstance(field, scapy_all.BitField) or isinstance(field, scapy_all.ByteField):
                 setattr(self.OT_packet, field_name, 0)
-                print(f"Cleared {field_name}")
+                self.write(f"Cleared {field_name}")
             elif isinstance(field, scapy_all.StrFixedLenField):
                 setattr(self.OT_packet, field_name, '')
-                print(f"Cleared {field_name}")
+                self.write(f"Cleared {field_name}")
             else:
-                print(f"Cannot clear field {field_name}: unsupported field type.")
+                self.write(f"Cannot clear field {field_name}: unsupported field type.")
         else:
-            print(f"Field {field_name} not found.")
+            self.write(f"Field {field_name} not found.")
             
     def get_field(self, field_name):
         self.logger.info("Executing get_field function")
         timestamp = self.get_timestamp()
-        click.echo("")
-        click.echo(tabulate([[timestamp]], headers=["Timestamp", ""], tablefmt="fancy_grid"))
+        self.echo("")
+        self.echo(tabulate([[timestamp]], headers=["Timestamp", ""], tablefmt="fancy_grid"))
         
         if hasattr(self.OT_packet, field_name):
             field_value = self.get_big_endian_value(self.OT_packet, field_name)
             packet_type = self.OT_packet.__class__.__name__
             field_data = [(packet_type, field_name, self.decrease_font_size(str(field_value)))]
             
-            # click.echo(f"{field_name}: {field_value}")
+            # self.echo(f"{field_name}: {field_value}")
         elif hasattr(self.TO_packet, field_name):
             field_value = self.get_big_endian_value(self.TO_packet, field_name)
             packet_type = self.TO_packet.__class__.__name__
             field_data = [(packet_type, field_name, self.decrease_font_size(str(field_value)))]
             
-            # click.echo(f"{field_name}: {field_value}")
+            # self.echo(f"{field_name}: {field_value}")
         else:
             packet_type = "N/A"
             field_data = [(packet_type, field_name, "Field not found")]
-            # click.echo(f"Field {field_name} not found.")
+            # self.echo(f"Field {field_name} not found.")
         
-        #click.echo(f"\t\t\t {packet_type} \t\t\t")
-        click.echo(tabulate(field_data, headers=["CIP-MSG Identifier", "Field Name", "Field Value"], tablefmt="fancy_grid"))
-        click.echo("")
+        #self.echo(f"\t\t\t {packet_type} \t\t\t")
+        self.echo(tabulate(field_data, headers=["CIP-MSG Identifier", "Field Name", "Field Value"], tablefmt="fancy_grid"))
+        self.echo("")
           
     def get_big_endian_value(self, packet, field_name):
         field = getattr(packet.__class__, field_name)
@@ -616,33 +680,33 @@ class CLI:
     
     def print_frame(self):
         # Print timestamp
-        print(*"=" * 50, sep="")
-        click.echo("")
+        self.write(*"=" * 50, sep="")
+        self.echo("")
         timestamp = self.get_timestamp()
-        click.echo(tabulate([[timestamp]], headers=["Timestamp", ""], tablefmt="fancy_grid"))
+        self.echo(tabulate([[timestamp]], headers=["Timestamp", ""], tablefmt="fancy_grid"))
         self.lock.acquire()
         class_name_OT = self.OT_packet.__class__.__name__
         field_data_OT = [(field.name, self.decrease_font_size(str(self.get_big_endian_value(self.OT_packet, field.name)))) for field in self.OT_packet.fields_desc]
         self.lock.release()
-        click.echo(f"\t\t\t {class_name_OT} \t\t\t")
-        click.echo(tabulate(field_data_OT, headers=["Field Name", "Field Value"], tablefmt="fancy_grid"))
-        click.echo("")
+        self.echo(f"\t\t\t {class_name_OT} \t\t\t")
+        self.echo(tabulate(field_data_OT, headers=["Field Name", "Field Value"], tablefmt="fancy_grid"))
+        self.echo("")
         
         self.lock.acquire()
         class_name_TO = self.TO_packet.__class__.__name__
         field_data_TO = [(field.name, self.decrease_font_size(str(self.get_big_endian_value(self.TO_packet, field.name)))) for field in self.TO_packet.fields_desc]
         self.lock.release()
-        click.echo(f"\t\t\t {class_name_TO} \t\t\t")
-        click.echo(tabulate(field_data_TO, headers=["Field Name", "Field Value"], tablefmt="fancy_grid"))
-        click.echo("")
-        print(*"=" * 50, sep="")
+        self.echo(f"\t\t\t {class_name_TO} \t\t\t")
+        self.echo(tabulate(field_data_TO, headers=["Field Name", "Field Value"], tablefmt="fancy_grid"))
+        self.echo("")
+        self.write(*"=" * 50, sep="")
         
     # def print_frame(self):
     #     # Print timestamp
-    #     print(*"=" * 50, sep="")
-    #     click.echo("")
+    #     self.write(*"=" * 50, sep="")
+    #     self.echo("")
     #     timestamp = self.get_timestamp()
-    #     click.echo(tabulate([[timestamp]], headers=["Timestamp", ""], tablefmt="fancy_grid"))
+    #     self.echo(tabulate([[timestamp]], headers=["Timestamp", ""], tablefmt="fancy_grid"))
         
     #     # Print fields for OT_packet
     #     class_name_OT = self.OT_packet.__class__.__name__
@@ -656,9 +720,9 @@ class CLI:
     #         length = signal_info.get('length', '')
     #         field_data_OT.append([field_name, field_value, data_type, offset, length])
         
-    #     click.echo(f"\t\t\t {class_name_OT} \t\t\t")
-    #     click.echo(tabulate(field_data_OT, headers=["Field Name", "Field Value", "Data Type", "Offset", "Length"], tablefmt="fancy_grid"))
-    #     click.echo("")
+    #     self.echo(f"\t\t\t {class_name_OT} \t\t\t")
+    #     self.echo(tabulate(field_data_OT, headers=["Field Name", "Field Value", "Data Type", "Offset", "Length"], tablefmt="fancy_grid"))
+    #     self.echo("")
         
     #     # Print fields for TO_packet
     #     class_name_TO = self.TO_packet.__class__.__name__
@@ -672,10 +736,10 @@ class CLI:
     #         length = signal_info.get('length', '')
     #         field_data_TO.append([field_name, field_value, data_type, offset, length])
         
-    #     click.echo(f"\t\t\t {class_name_TO} \t\t\t")
-    #     click.echo(tabulate(field_data_TO, headers=["Field Name", "Field Value", "Data Type", "Offset", "Length"], tablefmt="fancy_grid"))
-    #     click.echo("")
-    #     print(*"=" * 50, sep="")
+    #     self.echo(f"\t\t\t {class_name_TO} \t\t\t")
+    #     self.echo(tabulate(field_data_TO, headers=["Field Name", "Field Value", "Data Type", "Offset", "Length"], tablefmt="fancy_grid"))
+    #     self.echo("")
+    #     self.write(*"=" * 50, sep="")
     
     
     def print_packet_fields(self, title, packet, show_spares=False):
@@ -716,9 +780,9 @@ class CLI:
         headers = ["Field Type", "Field Names"]
         colalign = ["left", "left"]  # Setting alignment for both columns to left
         title_header = f"{title}:"
-        click.echo(title_header.center(table_width))
-        click.echo(tabulate(packet_table, headers=headers, colalign=colalign, tablefmt="fancy_grid"))
-        click.echo("")
+        self.echo(title_header.center(table_width))
+        self.echo(tabulate(packet_table, headers=headers, colalign=colalign, tablefmt="fancy_grid"))
+        self.echo("")
         
     def list_fields(self):
         self.logger.info("Executing list_fields function")
@@ -748,30 +812,30 @@ class CLI:
     def live_field_data(self, refresh_ms):
         self.logger.info("Executing live_field_data function")
         refresh_rate = float(refresh_ms)
-        click.echo("")
+        self.echo("")
         try:
             while True:
                 # Print timestamp
-                print(*"=" * 50, sep="")
-                click.echo("")
+                self.write(*"=" * 50, sep="")
+                self.echo("")
                 timestamp = self.get_timestamp()
-                click.echo(tabulate([[timestamp]], headers=["Timestamp", ""], tablefmt="fancy_grid"))
+                self.echo(tabulate([[timestamp]], headers=["Timestamp", ""], tablefmt="fancy_grid"))
                 
                 class_name_OT = self.OT_packet.__class__.__name__
                 field_data_OT = [(field.name, self.decrease_font_size(str(getattr(self.OT_packet, field.name)))) for field in self.OT_packet.fields_desc]
-                click.echo(f"\t\t\t {class_name_OT} \t\t\t")
-                click.echo(tabulate(field_data_OT, headers=["Field Name", "Field Value"], tablefmt="fancy_grid"))
-                click.echo("")
+                self.echo(f"\t\t\t {class_name_OT} \t\t\t")
+                self.echo(tabulate(field_data_OT, headers=["Field Name", "Field Value"], tablefmt="fancy_grid"))
+                self.echo("")
                 
                 class_name_TO = self.TO_packet.__class__.__name__
                 field_data_TO = [(field.name, self.decrease_font_size(str(getattr(self.TO_packet, field.name)))) for field in self.TO_packet.fields_desc]
-                click.echo(f"\t\t\t {class_name_TO} \t\t\t")
-                click.echo(tabulate(field_data_TO, headers=["Field Name", "Field Value"], tablefmt="fancy_grid"))
+                self.echo(f"\t\t\t {class_name_TO} \t\t\t")
+                self.echo(tabulate(field_data_TO, headers=["Field Name", "Field Value"], tablefmt="fancy_grid"))
                 time.sleep(refresh_rate/1000)  # Adjust the delay as needed for real-time display
-                click.echo("")
-                print(*"=" * 50, sep="")
+                self.echo("")
+                self.write(*"=" * 50, sep="")
         except KeyboardInterrupt:
-            print("\nExiting live field data display...")
+            self.write("\nExiting live field data display...")
             return
    
     
@@ -803,15 +867,15 @@ class CLI:
                     bE_field_value = struct.unpack('f', reversed_byte_array)[0] #Big endian field value
                     setattr(self.OT_packet, field_name, bE_field_value)
                     
-                    # print(f"Set {field_name} to {wave_value}")
+                    # self.write(f"Set {field_name} to {wave_value}")
                     time.sleep(0.01)  # Adjust sleep time as needed
 
             self.stop_events[field_name] = threading.Event()
             wave_thread_instance = threading.Thread(target=wave_thread)
             wave_thread_instance.start()
-            print(f"Waving {field_name} from {min_value} to {max_value} every {period_ms} milliseconds.")
+            self.write(f"Waving {field_name} from {min_value} to {max_value} every {period_ms} milliseconds.")
         else:
-            print(f"Field {field_name} is not of type IEEEFloatField and cannot be waved.")
+            self.write(f"Field {field_name} is not of type IEEEFloatField and cannot be waved.")
             
     def tria_field(self, field_name, max_value, min_value, period_ms):
         self.logger.info("Executing tria_field function")
@@ -836,15 +900,15 @@ class CLI:
                     reversed_byte_array = byte_array[::-1]
                     bE_field_value = struct.unpack('f', reversed_byte_array)[0] #Big endian field value
                     setattr(self.OT_packet, field_name, bE_field_value)
-                    # print(f"Set {field_name} to {wave_value}")
+                    # self.write(f"Set {field_name} to {wave_value}")
                     time.sleep(0.01)  # Adjust sleep time as needed
 
             self.stop_events[field_name] = threading.Event()
             wave_thread_instance = threading.Thread(target=tria_wave_thread)
             wave_thread_instance.start()
-            print(f"Triangular waving {field_name} from {min_value} to {max_value} every {period_ms} milliseconds.")
+            self.write(f"Triangular waving {field_name} from {min_value} to {max_value} every {period_ms} milliseconds.")
         else:
-            print(f"Field {field_name} is not of type IEEEFloatField and cannot be waved.")
+            self.write(f"Field {field_name} is not of type IEEEFloatField and cannot be waved.")
             
     
     def box_field(self, field_name, max_value, min_value, period_ms, duty_cycle):
@@ -871,21 +935,21 @@ class CLI:
                     reversed_byte_array = byte_array[::-1]
                     bE_field_value = struct.unpack('f', reversed_byte_array)[0] #Big endian field value
                     setattr(self.OT_packet, field_name, bE_field_value)
-                    # print(f"Set {field_name} to {wave_value}")
+                    # self.write(f"Set {field_name} to {wave_value}")
                     time.sleep(0.01)  # Adjust sleep time as needed
 
             self.stop_events[field_name] = threading.Event()
             wave_thread_instance = threading.Thread(target=box_wave_thread)
             wave_thread_instance.start()
-            print(f"Generating square wave for {field_name} with duty cycle {duty_cycle} every {period_ms} milliseconds.")
+            self.write(f"Generating square wave for {field_name} with duty cycle {duty_cycle} every {period_ms} milliseconds.")
         else:
-            print(f"Field {field_name} is not of type IEEEFloatField and cannot be waved.")
+            self.write(f"Field {field_name} is not of type IEEEFloatField and cannot be waved.")
             
     def stop_all_thread(self):
         self.logger.info(f"{self.stop_all_thread.__name__}: Stopping all wave threads for domain")
         for field_name in self.stop_events:
             self.stop_events[field_name].set()
-            click.echo(f"{self.stop_all_thread.__name__}: Waving for '{field_name}' has been stopped")
+            self.echo(f"{self.stop_all_thread.__name__}: Waving for '{field_name}' has been stopped")
         self.logger.info(f"{self.stop_all_thread.__name__}: All wave threads have been successfully stopped")
 
             
@@ -893,7 +957,7 @@ class CLI:
         self.logger.info("Executing stop_wave function")
         if field_name in self.stop_events and not self.stop_events[field_name].is_set():
             self.stop_events[field_name].set()
-            click.echo(f"\nWaving for '{field_name}' has been stopped.\n")
+            self.echo(f"\nWaving for '{field_name}' has been stopped.\n")
             
     def print_last_logs(self):
         log_file_path = "./log/app.log"
@@ -901,9 +965,9 @@ class CLI:
             with open(log_file_path, "r") as log_file:
                 lines = log_file.readlines()
                 last_100_lines = lines[-100:]
-                click.echo("Last 100 lines of app.log:")
+                self.echo("Last 100 lines of app.log:")
                 for line in last_100_lines:
-                    click.echo(line.strip())
+                    self.echo(line.strip())
     
     def calculate_connection_params(self):
         ot_size = None
@@ -935,20 +999,20 @@ class CLI:
         self.logger.info("Executing CIP Communication Start function")
 
         if self.session.running:
-            click.echo("CIP communication is already running.")
+            self.echo("CIP communication is already running.")
             return
 
         if self.TO_packet_class is None or self.OT_packet_class is None:
-            click.echo("CIP packets are not initialised. Run 'cip_config' first.")
+            self.echo("CIP packets are not initialised. Run 'cip_config' first.")
             return
 
         if self.ip_address is None or self.user_multicast_address is None:
-            click.echo("Network configuration is incomplete. Run 'test_net' first.")
+            self.echo("Network configuration is incomplete. Run 'test_net' first.")
             return
 
         ot_param, to_param = self.calculate_connection_params()
         if ot_param is None or to_param is None:
-            click.echo("Unable to calculate connection parameters from the assemblies.")
+            self.echo("Unable to calculate connection parameters from the assemblies.")
             return
 
         params = cip_session.ConnectionParameters(ot_param=ot_param, to_param=to_param)
@@ -964,30 +1028,30 @@ class CLI:
                 update_to_packet=self._update_to_packet,
             )
         except RuntimeError as exc:
-            click.echo(str(exc))
+            self.echo(str(exc))
 
     def stop_comm(self):
         self.logger.info(f"{self.stop_comm.__name__}: Stopping comm thread")
         if not self.session.running:
-            click.echo("No active CIP communication session.")
+            self.echo("No active CIP communication session.")
             return
 
         self.session.stop()
         self.bCIPErrorOccured = self.session.error_occurred
-        click.echo("CIP communication stopped.")
+        self.echo("CIP communication stopped.")
 
 
  
     
     def handle_input(self):
         self.logger.info("Executing handle_input function")
-        # click.echo("Handle Input is Printed")
+        # self.echo("Handle Input is Printed")
         self.help_menu()
         
         try:
             while True:
-                    print("")
-                    command = click.prompt("Enter Command").strip().split()
+                    self.write("")
+                    command = self.prompt("Enter Command").strip().split()
                     if command[0] == "start" and len(command) == 1:
                         self.start_comm()
                     elif command[0] == "stop" and len(command) == 1:
@@ -1024,52 +1088,83 @@ class CLI:
                     elif command[0] == "help":
                         self.help_menu()
                     elif command[0] == "exit":
-                        click.echo("Exiting !")
+                        self.echo("Exiting !")
                         self.stop_all_thread()
                         sys.exit()
                     else:
-                        click.echo("Invalid cmd")
+                        self.echo("Invalid cmd")
             
         except KeyboardInterrupt:
-            click.echo("Exiting !!")
+            self.echo("Exiting !!")
             self.stop_all_thread()
             sys.exit()
-                
-            
-def main():
-    # plc_object = client('127.0.0.1')
-    
-    global ENABLE_NETWORK
-    cmd = CLI()
+
+
+def main(
+    config: Optional[RunConfiguration] = None,
+    *,
+    ui: Optional[UserInterface] = None,
+    network_configurator=cip_network.config_network,
+    cli: Optional[CLI] = None,
+    cli_factory: Optional[Any] = None,
+) -> None:
+    """Entrypoint for both interactive and scripted runs of the CLI."""
+
+    configuration = config or RunConfiguration()
+    enable_network = (
+        configuration.enable_network
+        if configuration.enable_network is not None
+        else ENABLE_NETWORK
+    )
+
+    if cli_factory is None:
+        cli_factory = lambda: CLI(ui=ui, network_configurator=network_configurator)
+
+    cmd = cli or cli_factory()
     cmd.display_banner()
-    
     cmd.progress_bar("Initializing", 1)
-    
-    
+
     if cmd.cip_test_flag:
-        if click.confirm('Do you want to continue?', default=True):
-            # If user answers yes
-            cmd.cip_config()
+        if configuration.auto_continue is None:
+            should_continue = cmd.confirm('Do you want to continue?', default=True)
         else:
-            # If user answers no
-            click.echo('Exiting...')
-            sys.exit()
-        
-        
-    # Test CIP Configuration
+            should_continue = configuration.auto_continue
+
+        if not should_continue:
+            cmd.echo('Exiting...')
+            return
+
+        if not cmd.cip_config(preselected_filename=configuration.cip_filename):
+            main(
+                config=configuration,
+                ui=ui,
+                network_configurator=network_configurator,
+                cli_factory=cli_factory,
+            )
+            return
+
     if not cmd.cip_test_flag:
-        main() # Restart configuration if failed
+        main(
+            config=configuration,
+            ui=ui,
+            network_configurator=network_configurator,
+            cli_factory=cli_factory,
+        )
+        return
 
-    
-    
-    # Test Target Communication
-    if ENABLE_NETWORK:
-        if not cmd.config_network():
-            main()  # Restart configuration if failed
+    if enable_network:
+        if not cmd.config_network(
+            ip_address=configuration.target_ip,
+            multicast_address=configuration.multicast_address,
+        ):
+            main(
+                config=configuration,
+                ui=ui,
+                network_configurator=network_configurator,
+                cli_factory=cli_factory,
+            )
+            return
 
-
-            
-    # Handle the Input from User in a loop
     cmd.handle_input()
 
 if __name__ == "__main__":
