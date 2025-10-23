@@ -10,6 +10,7 @@ from scapy import all as scapy_all
 import os
 
 
+from thirdparty.scapy_cip_enip import utils
 from thirdparty.scapy_cip_enip.cip import CIP, CIP_Path, CIP_ReqConnectionManager, \
     CIP_MultipleServicePacket, CIP_ReqForwardOpen, CIP_RespForwardOpen, \
     CIP_ReqForwardClose, CIP_ReqGetAttributeList, CIP_ReqReadOtherTag
@@ -381,6 +382,15 @@ class Client(object):
         else:
             self.logger.warning("TGV2020: send_UDP_ENIP_CIP_IO: Socket error: failed to send UDP_ENIP_CIP_IO")
 
+    def _cip_status_ok(self, cippkt, context):
+        status_code, status_obj = utils.cip_status_details(cippkt)
+        if status_code != 0:
+            logger.error("%s: %r", context, status_obj or status_code)
+            return False
+        if status_obj is None:
+            self.logger.debug("%s: CIP response omitted status; assuming success", context)
+        return True
+
     def forward_open(self):
         """Send a forward open request"""
         self.logger.info("TGV2020: forward_open executing")
@@ -394,8 +404,7 @@ class Client(object):
             return
         cippkt = resppkt[CIP]
     
-        if cippkt.status[0].status != 0:
-            logger.error("Failed to Forward Open CIP connection: %r", cippkt.status[0])
+        if not self._cip_status_ok(cippkt, "Failed to Forward Open CIP connection"):
             return False
         assert isinstance(cippkt.payload, CIP_RespForwardOpen)
         self.enip_connection_id_OT = cippkt.payload.OT_network_connection_id
@@ -412,10 +421,9 @@ class Client(object):
         resppkt = self.recv_enippkt()
         cippkt = resppkt[CIP]
         
-        if cippkt.status[0].status != 0:
-            logger.error("Failed to Forward Close CIP connection: %r", cippkt.status[0])
+        if not self._cip_status_ok(cippkt, "Failed to Forward Close CIP connection"):
             return False
-        
+
         return True
 
     def get_attribute(self, class_id, instance, attr):
@@ -431,8 +439,7 @@ class Client(object):
         resppkt = self.recv_enippkt()
         cippkt = resppkt[CIP]
         
-        if cippkt.status[0].status != 0:
-            logger.error("CIP get attribute error: %r", cippkt.status[0])
+        if not self._cip_status_ok(cippkt, "CIP get attribute error"):
             return
         resp_getattrlist = str(cippkt.payload)
         assert resp_getattrlist[:2] == b'\x01\x00'  # Attribute count must be 1
@@ -451,8 +458,7 @@ class Client(object):
         resppkt = self.recv_enippkt()
         cippkt = resppkt[CIP]
         
-        if cippkt.status[0].status != 0:
-            logger.error("CIP set attribute error: %r", cippkt.status[0])
+        if not self._cip_status_ok(cippkt, "CIP set attribute error"):
             return False
         return True
 
@@ -472,14 +478,14 @@ class Client(object):
             for i in range(0, len(data), 4):
                 inst_list.append(struct.unpack('<I', data[i:i + 4])[0])
             
-            cipstatus = resppkt[CIP].status[0].status
+            cipstatus, status_obj = utils.cip_status_details(resppkt[CIP])
             if cipstatus == 0:
                 return inst_list
             elif cipstatus == 6:
                 # Partial response, query again from the next instance
                 start_instance = inst_list[-1] + 1
             else:
-                logger.error("Error in Get Instance List response: %r", resppkt[CIP].status[0])
+                logger.error("Error in Get Instance List response: %r", status_obj or cipstatus)
                 return
 
     def read_full_tag(self, class_id, instance_id, total_size):
@@ -496,7 +502,7 @@ class Client(object):
                 return
             resppkt = self.recv_enippkt()
             
-            cipstatus = resppkt[CIP].status[0].status
+            cipstatus, status_obj = utils.cip_status_details(resppkt[CIP])
             received_data = str(resppkt[CIP].payload)
             if cipstatus == 0:
                 # Success
@@ -505,7 +511,7 @@ class Client(object):
                 # Partial response (size too big)
                 pass
             else:
-                logger.error("Error in Read Tag response: %r", resppkt[CIP].status[0])
+                logger.error("Error in Read Tag response: %r", status_obj or cipstatus)
                 return
 
             # Remember the chunk and continue

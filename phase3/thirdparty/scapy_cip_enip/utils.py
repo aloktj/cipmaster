@@ -20,6 +20,8 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 """Useful routines and utilities which simplify code writing"""
+from typing import Optional, Tuple
+
 from scapy import all as scapy_all
 
 
@@ -63,3 +65,23 @@ class XBitEnumField(scapy_all.BitEnumField):
         if x in self.i2s:
             return self.i2s[x]
         return scapy_all.lhex(x)
+
+
+def cip_status_details(cippkt) -> Tuple[int, Optional[object]]:
+    """Return a CIP status code and the corresponding status object.
+
+    Some devices omit the response status list entirely, which previously
+    triggered ``IndexError`` crashes when callers expected the first status to
+    be present.  Normalise those "missing" cases to a success code (0) and
+    surface the optional status structure for logging when it exists.
+    """
+
+    statuses = getattr(cippkt, "status", None) or []
+    if not statuses:
+        return 0, None
+
+    status = statuses[0]
+    code = getattr(status, "status", None)
+    if code is None:
+        return 0, status
+    return code, status
