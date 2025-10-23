@@ -141,9 +141,8 @@ class CIPSession:
             pkg_cip_io = client.recv_UDP_ENIP_CIP_IO(self._debug_cip_frames, 0.5)
 
             if pkg_cip_io is None:
-                logger.warning("Failed to decode CIP IO frame")
-                error_occurred = True
-                break
+                logger.debug("No CIP IO packet received; retrying")
+                continue
 
             try:
                 with self._lock:

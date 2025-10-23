@@ -75,7 +75,7 @@ class ENIP_UDP(scapy_all.Packet):
     ]
 
     def extract_padding(self, p):
-        return "", p
+        return b"", p
 
 
 class CIP_IO(scapy_all.Packet):
@@ -102,7 +102,7 @@ if __name__ == '__main__':
     ])
 
     # Build!
-    data = str(pkt)
+    data = bytes(pkt)
     pkt = scapy_all.Ether(data)
     pkt.show()
 
