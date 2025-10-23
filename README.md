@@ -15,6 +15,13 @@ pip install -e .[dev]
 
 This command installs the CLI entry point (`cipmaster`) along with pytest, coverage, and lint tooling used during development.
 
+## Compatibility
+
+The refactored tooling targets modern runtimes:
+
+* Python 3.10 or newer (validated against CPython 3.12)
+* Scapy 2.6.x or newer
+
 ## Running the CLI
 
 Once installed you can launch the interactive experience from anywhere on your system:

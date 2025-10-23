@@ -64,8 +64,8 @@ class CLI:
         self.net_test_flag = False
         # self.TO_packet = self.AS_VAC_MPU_DATA()
         # self.OT_packet = self.AS_MPU_VAC_DATA()
-        self.TO_packet = scapy_all.packet
-        self.OT_packet = scapy_all.packet
+        self.TO_packet = scapy_all.Packet()
+        self.OT_packet = scapy_all.Packet()
         self.root = None
         self.config_file_names = []
         self.config_file_map = {}

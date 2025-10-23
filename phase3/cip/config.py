@@ -294,7 +294,7 @@ def create_packet_class(assembly_element: ET.Element) -> Tuple[Optional[Type[sca
         elif field_type == "real":
             field_desc.append(scapy_all.IEEEFloatField(field_id, 0))
         elif field_type == "string":
-            field_desc.append(scapy_all.StrFixedLenField(field_id, "", int(field_length)))
+            field_desc.append(scapy_all.StrFixedLenField(field_id, b"", int(field_length)))
         elif field_type == "udint":
             field_desc.append(scapy_all.LEIntField(field_id, 0))
         elif field_type == "uint":
