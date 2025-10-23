@@ -149,7 +149,7 @@ if __name__ == '__main__':
     pkt /= ENIP_TCP()
     pkt /= ENIP_SendUnitData(items=[
         ENIP_SendUnitData_Item() / ENIP_ConnectionAddress(connection_id=1337),
-        ENIP_SendUnitData_Item() / ENIP_ConnectionPacket(sequence=4242) / scapy_all.Raw(load='test')
+        ENIP_SendUnitData_Item() / ENIP_ConnectionPacket(sequence=4242) / scapy_all.Raw(load=b'test')
     ])
 
     # Build!
