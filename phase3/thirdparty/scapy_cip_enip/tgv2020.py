@@ -211,8 +211,10 @@ class Client(object):
         """ create two IP connection,
             - first:to manage CIP unicast of DCU TGV2020 (TCP and UDP) ,
             - second:to manage CIP multicast frame (224.0.0.0/4 RFC5771) only UDP due to multicast"""
+        self._local_ip: Optional[str] = None
+
         if not NO_NETWORK:
-            #open connection with DCU 
+            #open connection with DCU
             try:
                 # print("DEBUG:5.1")
                 self.Sock = socket.create_connection((IPAddr, self.PortEtherNetIPExplicitMessage))
@@ -222,13 +224,31 @@ class Client(object):
                 logger.warn("socket error: %s", exc)
                 logger.warn("Continuing without sending anything")
                 self.Sock = None
+            else:
+                try:
+                    self._local_ip = self.Sock.getsockname()[0]
+                    self.logger.debug(
+                        "Detected local interface %s for CIP session", self._local_ip
+                    )
+                except OSError as exc:
+                    self.logger.debug(
+                        "Unable to determine local interface for CIP session: %s", exc
+                    )
+                    self._local_ip = None
 
             #open connection to the multicast group
             try:
                 # print("DEBUG:5.4")
                 # Create the socket
                 self.MulticastSock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                
+
+                try:
+                    self.MulticastSock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                except OSError as exc:
+                    self.logger.debug(
+                        "Unable to enable SO_REUSEADDR on multicast socket: %s", exc
+                    )
+
                 # print("DEBUG:5.5")
                 # Bind to the server address
                 self.MulticastSock.bind(('',self.PortEtherNetIPImplicitMessageIO))
@@ -238,9 +258,62 @@ class Client(object):
                 # on all interfaces.
                 group = socket.inet_aton(MulticastGroupIPaddr)
                 # print("DEBUG:5.7")
-                mreq = struct.pack('4sL', group, socket.INADDR_ANY)
-                # print("DEBUG:5.8")
-                self.MulticastSock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+                interface_ip: Optional[bytes] = None
+                if self._local_ip:
+                    try:
+                        interface_ip = socket.inet_aton(self._local_ip)
+                    except OSError:
+                        interface_ip = None
+
+                joined = False
+
+                if interface_ip is not None:
+                    try:
+                        self.MulticastSock.setsockopt(
+                            socket.IPPROTO_IP,
+                            socket.IP_MULTICAST_IF,
+                            interface_ip,
+                        )
+                    except OSError as exc:
+                        self.logger.debug(
+                            "Unable to select multicast interface %s: %s",
+                            self._local_ip,
+                            exc,
+                        )
+
+                    try:
+                        mreq = struct.pack('4s4s', group, interface_ip)
+                        self.MulticastSock.setsockopt(
+                            socket.IPPROTO_IP,
+                            socket.IP_ADD_MEMBERSHIP,
+                            mreq,
+                        )
+                    except OSError as exc:
+                        self.logger.warning(
+                            "Failed to join multicast group %s on interface %s",
+                            MulticastGroupIPaddr,
+                            self._local_ip,
+                        )
+                        self.logger.debug("Membership error details", exc_info=True)
+                    else:
+                        joined = True
+
+                if not joined:
+                    try:
+                        mreq_any = struct.pack('4sL', group, socket.INADDR_ANY)
+                        self.MulticastSock.setsockopt(
+                            socket.IPPROTO_IP,
+                            socket.IP_ADD_MEMBERSHIP,
+                            mreq_any,
+                        )
+                    except OSError as exc:
+                        logger.warn("Not possible to manage multicast group ip address: %s", exc)
+                        self.MulticastSock = None
+                    else:
+                        self.logger.debug(
+                            "Joined multicast group %s using INADDR_ANY fallback",
+                            MulticastGroupIPaddr,
+                        )
                 # print("DEBUG:5.9")
             except:
                 # print("DEBUG:5.10")
