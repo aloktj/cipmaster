@@ -141,13 +141,17 @@ class CIPSession:
             pkg_cip_io = client.recv_UDP_ENIP_CIP_IO(self._debug_cip_frames, 0.5)
 
             if pkg_cip_io is None:
-                logger.warning("Failed to decode CIP IO frame")
-                error_occurred = True
-                break
+                logger.debug("No CIP IO packet received; retrying")
+                continue
+
+            payload_bytes = bytes(getattr(pkg_cip_io, "payload", b""))
+            if not payload_bytes:
+                logger.debug("Received CIP IO packet with empty payload; retrying")
+                continue
 
             try:
                 with self._lock:
-                    to_packet = to_packet_class(pkg_cip_io.payload.load)
+                    to_packet = to_packet_class(payload_bytes)
                 update_to_packet(to_packet)
             except Exception:
                 logger.exception("Unable to parse TO packet from CIP IO payload")

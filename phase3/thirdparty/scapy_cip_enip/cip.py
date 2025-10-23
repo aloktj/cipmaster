@@ -214,7 +214,7 @@ class CIP_Path(scapy_all.Packet):
     ]
 
     def extract_padding(self, p):
-        return "", p
+        return b"", p
 
     @classmethod
     def make(cls, class_id=None, instance_id=None, member_id=None, attribute_id=None):
@@ -320,7 +320,7 @@ class CIP_ResponseStatus(scapy_all.Packet):
     }
 
     def extract_padding(self, p):
-        return "", p
+        return b"", p
 
     def __repr__(self):
         if self.reserved != 0:
@@ -424,7 +424,7 @@ class _CIPMSPPacketList(scapy_all.PacketListField):
                     raise
                 p = scapy_all.conf.raw_layer(load=remain)
             lst.append(p)
-        return "", lst
+        return b"", lst
 
 
 class CIP_ConnectionParam(scapy_all.Packet):
@@ -444,11 +444,11 @@ class CIP_ConnectionParam(scapy_all.Packet):
         return struct.pack('>H', int(b)) + s[2:]
 
     def do_build(self):
-        p = ''
+        p = b''
         return p
 
     def extract_padding(self, s):
-        return '', s
+        return b'', s
 
 
 class CIP_ReqForwardOpen(scapy_all.Packet):
@@ -523,14 +523,14 @@ class CIP_MultipleServicePacket(scapy_all.Packet):
     def do_build(self):
         """Build the packet by concatenating packets and building the offsets list"""
         # Build the sub packets
-        subpkts = [str(pkt) for pkt in self.packets]
+        subpkts = [bytes(pkt) for pkt in self.packets]
         # Build the offset lists
         current_offset = 2 + 2 * len(subpkts)
         offsets = []
         for p in subpkts:
             offsets.append(struct.pack("<H", current_offset))
             current_offset += len(p)
-        return struct.pack("<H", len(subpkts)) + "".join(offsets) + "".join(subpkts)
+        return struct.pack("<H", len(subpkts)) + b"".join(offsets) + b"".join(subpkts)
 
 
 class CIP_ReqConnectionManager(scapy_all.Packet):
@@ -578,16 +578,16 @@ if __name__ == '__main__':
     # Test building/dissecting packets
     # Build a CIP Get Attribute All request
     path = CIP_Path.make(class_id=1, instance_id=1)
-    assert str(path) == b"\x03\x20\x01\x25\x00\x01\x00"
+    assert bytes(path) == b"\x03\x20\x01\x25\x00\x01\x00"
     pkt = CIP(service=1, path=path)
-    pkt = CIP(str(pkt))
+    pkt = CIP(bytes(pkt))
     pkt.show()
     assert pkt[CIP].direction == 0
     assert pkt[CIP].path[0] == path
 
     # Build a CIP Get_Attribute_List response
     pkt = CIP() / CIP_RespAttributesList(count=1, content="test")
-    pkt = CIP(str(pkt))
+    pkt = CIP(bytes(pkt))
     pkt.show()
     assert pkt[CIP].direction == 1
     assert pkt[CIP].service == 0x03
@@ -605,7 +605,7 @@ if __name__ == '__main__':
         CIP(path=CIP_Path.make(class_id=0x70, instance_id=1)) / CIP_ReqGetAttributeList(attrs=[1, 2]),
         CIP(service=0x0e, path=CIP_Path.make(class_id=0x8e, instance_id=1, attribute_id=0x1b)),
     ])
-    pkt = CIP(str(pkt))
+    pkt = CIP(bytes(pkt))
     pkt.show()
     assert pkt[CIP].direction == 0
     assert pkt[CIP].service == 0x0a
