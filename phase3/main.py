@@ -1,9 +1,7 @@
 import click
 import sys
 import time
-import ping3
 from scapy import all as scapy_all
-import xml.etree.ElementTree as ET
 import os
 import math
 import threading
@@ -11,18 +9,15 @@ import pyfiglet
 import string
 from termcolor import colored
 from tabulate import tabulate
-import calendar
 import logging
-import subprocess
-import platform
-import ipaddress
 from datetime import datetime
-from struct import pack, unpack 
+from struct import pack, unpack
 import binascii
-import operator
 import struct
-# from thirdparty.scapy_cip_enip.plc import PLCClient as client
-from thirdparty.scapy_cip_enip.tgv2020 import Client
+
+from cip import config as cip_config
+from cip import network as cip_network
+from cip import session as cip_session
 
 
 # Create log directory if it doesn't exist
@@ -60,7 +55,6 @@ class CLI:
         self.last_cip_file_name = None
         self.stop_event = None
         self.stop_events = {}
-        self.stop_comm_events = None
         self.thread_dict = {}  # Dictionary to store wave threads
         self.cip_test_flag = True
         self.logger.info("Initializing LoggedClass")
@@ -72,15 +66,13 @@ class CLI:
         self.time_zone = self.get_system_timezone()
         self.MPU_CTCMSAlive = int(0)
         
-        self.CIP_AppCounter = 65500
         self.bCIPErrorOccured = bool(False)
-        self.clMPU_CIP_Server = None
-        self.pkgCIP_IO = None
         self.TO_packet_class = None
         self.OT_packet_class = None
         self.xml = None
         self.ot_eo_assemblies = None
         self.to_assemblies = None
+        self.session = cip_session.CIPSession(lock=self.lock, debug_cip_frames=DEBUG_CIP_FRAMES)
         
         
         
@@ -148,309 +140,10 @@ class CLI:
     ###                     Multicast Route                         ###
     ###-------------------------------------------------------------###
     
-    def get_multicast_route(self):
-        try:
-            # Determine the operating system
-            os_name = platform.system()
-    
-            # Execute the appropriate command based on the operating system
-            if os_name == 'Windows':
-                result = subprocess.run(['route', 'print'], capture_output=True, text=True, check=True)
-            elif os_name in ['Linux', 'Darwin']:
-                result = subprocess.run(['ip', 'route'], capture_output=True, text=True, check=True)
-            else:
-                print("Unsupported operating system:", os_name)
-                return None
-    
-            # Split the output into lines
-            output_lines = result.stdout.split('\n')
-    
-            # Find the multicast route
-            for line in output_lines:
-                if '224.0.0.0/4' in line:
-                    self.multicast_route_exist = True
-                    return '224.0.0.0/4'
-    
-            return None
-        except subprocess.CalledProcessError:
-            # Handle errors if the command fails
-            print(f"Error: Unable to execute command on {os_name}.")
-            return None
-    
-    def check_multicast_support(self):
-        try:
-            # Prompt user for multicast IP address
-            
-            # Convert user provided IP to IPv4Address object
-            user_ip = ipaddress.IPv4Address(self.user_multicast_address)
-            print(f"check_multicast_support:{user_ip}")
-
-            self.platform_multicast_route = self.get_multicast_route()
-            
-            # Convert platform multicast route to IPv4Network object
-            if self.multicast_route_exist:
-                print("Multicast route exists")
-                platform_route = ipaddress.IPv4Network(self.platform_multicast_route)
-        
-                # Check if user provided IP falls within the platform's multicast route
-                print(f"User IP : {user_ip}")
-                print(f"Platform_route: {platform_route}")
-                if user_ip in platform_route:
-                    self.multicast_test_status = True
-                    return True
-                else:
-                    self.multicast_test_status = False
-                    return False
-            else:
-                self.multicast_test_status = False
-                return False
-        except ipaddress.AddressValueError as e:
-            print(f"Exception: {e}")
-            print("Invalid multicast group joining IP address.")
-            self.multicast_test_status = False
-            return False
-
-
-    
-    
-        
     ###-------------------------------------------------------------###
     ###                     Configuration                           ###
     ###-------------------------------------------------------------###
     
-    
-    
-    # Dynamically create a Scapy packet class
-    def create_packet_dict(self, fields_dict, assembly_size):
-        max_packet_size_bits= assembly_size
-        self.logger.info("Create_Packet_Dictionary()")
-        print(f"Assembly Size: {max_packet_size_bits}")
-        fields_desc = []
-        pack_bools = {}
-        signals = {}
-        
-        cip_data_type_size = {
-            'usint': 1,
-            'uint': 2,
-            'udint': 4,
-            'real': 4,
-            'string': 1,
-            'sint': 1,
-            'int': 2,
-            'dint': 4,
-            'lreal': 8,
-            'lint': 8
-            
-            # Add more datatypes if needed (except bool) (Size in Bytes)
-        }
-        
-        print("")
-        print("Create Packet Dict Called")
-        # Sort fields by their offsets to ensure correct packing
-        fields_dict.sort(key=operator.itemgetter('offset'))
-        # print("SORTED FIELD")
-        # for field in fields_dict:
-        #     print(f"ID: {field['id']}, Offset: {field['offset']}, Type: {field['type']}")
-            
-        self.logger.info("create_packet_dict: Sorted Fields")
-
-        sorted_dict = {}
-        # for item in fields_dict:
-        #     sorted_dict[item["id"]] = {"offset": item["offset"], 
-        #                             "type": item["type"], 
-        #                             "length": item["length"]}    
-        for item in fields_dict:
-            sorted_dict[item["id"]] = {"offset": item["offset"], 
-                                    "type": item["type"], "length": item["length"]}   
-        
-        # Iterate through sorted fields to organize signals into byte-sized packages
-        for field_id, field_info in sorted_dict.items():
-            offset = field_info['offset']
-            field_type = field_info['type']
-            field_length = field_info['length']
-            # print(field_length)
-            # print(f"OFFSET: {offset}, TYPE: {field_type}")
-            # self.logger.info("")
-            # self.logger.info(f"Offset: {offset} ")
-            # self.logger.info(f"Type: {field_type} ")
-            # self.logger.info(f"Length:{field_length}")
-            # self.logger.info("")
-            # print(f"Field ID: {field_id}, Type: {field_type}, Length: {field_length}, Offset: {offset}")
-            # print("")
-
-            # Calculate byte index for the current offset
-            byte_index = offset // 8
-
-            # Create a new package for the byte if it doesn't exist
-            if byte_index not in signals:
-                signals[byte_index] = []
-
-            # Append the signal to the corresponding package
-            if field_type == "bool":
-                signals[byte_index].append({'id': field_id, 'offset': offset, 'type': "bool", 'length': 1})
-
-        # Iterate through byte-sized packages to add signals and spares to the field description
-        len_counter = 0
-        temp_pad_index = 0
-        temp_pad_len = 0
-        for byte_index in range(( max_packet_size_bits // 8)):
-            # print("")
-            # print(f"BYTE Index: {byte_index}")
-            
-            if len_counter != 0:
-                len_counter -= 1
-                continue
-            
-            # print(f"LEN Counter: {len_counter}")
-            
-            pack = signals.get(byte_index, [])
-            if not pack:  # If no signals in this byte range
-                signals[byte_index] = []
-                # Check if there are other field types present in this byte range
-                for field_id, field_info in sorted_dict.items():
-                    if field_info['offset'] == byte_index * 8 and field_info['type'] != 'bool':
-                        field_data = (field_id, field_info['type'], field_info['length'])
-                        break
-                    else:
-                        field_data = None
-
-                if field_data:
-                    if temp_pad_len > 0:
-                        # print(f"'id': spare_byte_{temp_pad_index}, 'offset': {temp_pad_index * 8}, 'type': 'string', 'length': {temp_pad_len}")
-                        signals[temp_pad_index].append(
-                            {'id': f"spare_byte_{temp_pad_index}", 'offset': temp_pad_index * 8, 'type': "string", 'length': temp_pad_len})
-                        temp_pad_len = 0
-                        temp_pad_index = 0
-                    
-                    field_name, field_type, field_length = field_data  
-                    # print(f"'id': {field_name}, 'offset': {byte_index * 8}, 'type': {field_type}, 'length': {field_length}")
-                    signals[byte_index].append({'id': field_name, 'offset': byte_index * 8,  
-                                                'type': field_type, 'length': field_length})
-                    len_counter_field_size = cip_data_type_size.get(field_type, 1)
-                    
-                    len_counter = field_length*len_counter_field_size  - 1      # Support only String, TODO: make it support all datatype except bool
-                    # print(f"Length Counter={len_counter}")
-                else:
-                    len_counter = 0
-                    if temp_pad_len == 0:
-                        temp_pad_index = byte_index
-                    temp_pad_len += 1
-                    # print(f"'id': spare_byte_{byte_index}, 'offset': {byte_index * 8}, 'type': 'pad', 'length': 1")
-                    # signals[byte_index].append(
-                    #     {'id': f"spare_byte_{byte_index}", 'offset': byte_index * 8, 'type': "pad", 'length': 1})
-
-            else:
-                if temp_pad_len > 0:
-                    # print(f"'id': spare_byte_{temp_pad_index}, 'offset': {temp_pad_index * 8}, 'type': 'string', 'length': {temp_pad_len}")
-                    signals[temp_pad_index].append(
-                        {'id': f"spare_byte_{temp_pad_index}", 'offset': temp_pad_index * 8, 'type': "string", 'length': temp_pad_len})
-                    temp_pad_len = 0
-                    temp_pad_index = 0
-                    
-                # print(f"NO Signal Found ! BYTE Index: {byte_index}")
-                occupied_offsets = {signal['offset'] % 8 for signal in pack}
-                for bit_index in range(8):
-                    if bit_index not in occupied_offsets:
-                        bit_offset = byte_index * 8 + bit_index
-                        # print(f"'id': spare_bit_{byte_index}_{bit_index}, 'offset': {bit_offset}, 'type': 'bool', 'length': 1")
-                        signals[byte_index].append(
-                            {'id': f"spare_bit_{byte_index}_{bit_index}", 'offset': bit_offset, 'type': "bool", 'length': 1})
-                # Sort signals within the byte by their offsets
-                signals[byte_index].sort(key=lambda x: x['offset'])
-        
-        if temp_pad_len > 0:
-            # print(f"'id': spare_byte_{temp_pad_index}, 'offset': {temp_pad_index * 8}, 'type': 'string', 'length': {temp_pad_len}")
-            signals[temp_pad_index].append({'id': f"spare_byte_{temp_pad_index}", 'offset': temp_pad_index * 8, 'type': "string", 'length': temp_pad_len})
-
-        # for byte_index in range(len(signals)):
-        #     print(f"Byte Index: {byte_index}")
-            
-        #     print("1")
-
-        #     print("")
-        return signals
-    
-    def sorted_fields(self, packet):
-        self.logger.info("sorted_fields()")
-        fields = []
-        for byte_index, signals in packet.items():
-            # print(f"Byte Offset: {byte_index * 8}")
-            for signal in signals:
-                # print(f"Signal ID: {signal['id']}, Offset: {signal['offset']}, Type: {signal['type']}, 'length': {signal['length']}")
-                fields.append({'id': signal['id'], 'offset': signal['offset'], 'type': signal['type'], 'length': signal['length']})
-
-            # Sort fields based on offset value
-            fields = sorted(fields, key=lambda x: x['offset'])
-
-        # Print the sorted fields list
-        # print("Sorted Fields List:")
-        # for field in fields:
-        #     print(f"ID: {field['id']}, Offset: {field['offset']}, Type: {field['type']}, Length: {field['length']}")
-
-        return fields
-
-    
-    def create_packet_class(self, assembly_element):
-        self.logger.info("create_packet_class()")
-        # print("create_packet_class")
-        subtype = assembly_element.attrib['subtype']
-        assembly_size = int(assembly_element.attrib['size'])
-        # print(f"assembly size: {assembly_size}")
-        # print(f"subtype:{subtype}")
-        if subtype not in ['OT_EO', 'TO']:
-            return None  # Skip creation if subtype is not 'OT_EO' or 'TO'
-
-        # print("subtype matched")
-        class_name = assembly_element.attrib['id']
-        # print(f"class name: {class_name}")
-        fields_dict = []
-
-        for field in assembly_element.findall('.//'):
-            field_len = int(field.attrib.get('length', 1))
-            fields_dict.append({'id': field.attrib['id'], 'offset': int(field.attrib['offset']), 'type': field.tag, 'length': field_len})
-
-        byte_packet_field = self.create_packet_dict(fields_dict, assembly_size)
-        sorted_field = self.sorted_fields(byte_packet_field)
-        field_desc = []
-
-        # print("------------------------------------------------------------------------------")
-        for field in sorted_field:
-            field_id = field['id']
-            field_type = field['type']
-            field_length = field['length']
-            field_offset = field['offset']
-
-            if field_type == "usint":
-                field_desc.append(scapy_all.ByteField(field_id, 0))
-                # print(f" Type:{field_type}, ID:{field_id}, Len:{field_length}, Offset: {field_offset}")
-            elif field_type == "bool":
-                field_desc.append(scapy_all.BitField(field_id, 0, 1))
-                # print(f" Type:{field_type}, ID:{field_id}, Len:{field_length}, Offset: {field_offset}")
-            elif field_type == "real":
-                field_desc.append(scapy_all.IEEEFloatField(field_id, 0))
-                # print(f" Type:{field_type}, ID:{field_id}, Len:{field_length}, Offset: {field_offset}")
-            elif field_type == "string":
-                field_desc.append(scapy_all.StrFixedLenField(field_id, '', int(field_length)))
-                # print(f" Type:{field_type}, ID:{field_id}, Len:{field_length}, Offset: {field_offset}")
-            elif field_type == "udint":
-                field_desc.append(scapy_all.LEIntField(field_id, 0))
-                # print(f" Type:{field_type}, ID:{field_id}, Len:{field_length}, Offset: {field_offset}")
-            elif field_type == "uint":
-                field_desc.append(scapy_all.ShortField(field_id, 0))
-                # print(f" Type:{field_type}, ID:{field_id}, Len:{field_length}, Offset: {field_offset}")
-            elif field_type == "sint":
-                field_desc.append(scapy_all.SignedByteField(field_id, 0))
-                # print(f" Type:{field_type}, ID:{field_id}, Len:{field_length}, Offset: {field_offset}")
-
-        # print("------------------------------------------------------------------------------")
-        # print(" Can now Successfully Create Class")
-        dynamic_packet_class = type(class_name, (scapy_all.Packet,), {'name': class_name, 'fields_desc': field_desc})
-        return dynamic_packet_class, assembly_size
-    
-              
-    ###############################################################
-    # Testing only
-    ################################################################
     
     
     def list_files_in_config_folder(self):
@@ -476,263 +169,120 @@ class CLI:
     
     def cip_config(self):
         self.logger.info("Executing cip_config function")
-        
+
         click.echo("╔══════════════════════════════════════════╗")
         click.echo("║          CIP Configuration               ║")
         click.echo("╚══════════════════════════════════════════╝")
+        self.cip_file_count = 0
+        self.config_file_names = []
+        self.last_cip_file_name = None
         self.list_files_in_config_folder()
         time.sleep(0.1)
-        
+
         if self.cip_file_count > 1:
             if self.cip_config_attempts == 0:
                 self.cip_config_selected = click.prompt("CIP Configuration Filename")
                 click.echo("")
-            elif self.cip_config_attempts > 0:
-                if click.confirm('Do you want to change CIP Configuration?', default=True):
-                    self.cip_config_selected = click.prompt("CIP Configuration Filename")
+            elif self.cip_config_attempts > 0 and click.confirm('Do you want to change CIP Configuration?', default=True):
+                self.cip_config_selected = click.prompt("CIP Configuration Filename")
         else:
             self.cip_config_selected = self.last_cip_file_name
-            
-        # Increment the CIP Configuration Attempt Number
+
         self.cip_config_attempts += 1
-        
-        click.echo("\n===== Testing CIP Configuration =====")
-        
-        test_cases = [
-            ("CIP XML Validity", self.check_cip_xml_validity) #,
-            # ("Network Connectivity", self.check_network_connectivity),
-            # ("Database Connection", self.check_database_connection),
-            # Add more test cases as needed
-        ]
-        
-        if self.overall_cip_valid:
-            self.cip_test_flag = True
-        else:
+
+        if not self.cip_config_selected:
+            click.echo("No CIP configuration file available.")
+            self.overall_cip_valid = False
             self.cip_test_flag = False
-        
-        results = []
-        for test_case, test_function in test_cases:
-            result = "OK" if test_function() else "FAILED"
-            results.append([test_case, result])
-    
-        # click.echo(tabulate(results, headers=["Test Case", "Status"], tablefmt="fancy_grid", colalign=("left", "center")))
-        # click.echo("")
-    
-        if all(result == "OK" for _, result in results):
-            click.echo("All tests passed successfully.")
-            click.echo("")
-            self.cip_test_flag = True
-            return True
-        else:
-            click.echo("Some tests failed. Restarting CIP Tool.")
-            click.echo("")
             return False
 
-    def check_cip_config(self):
-        self.logger.info("Executing check_cip_config function")
-        """
-        Placeholder function to check CIP XML validity.
-        Replace the implementation with actual logic.
-        """
-        config_folder = "./conf/"
-        results = []
-        
-        if not os.path.exists(config_folder) or not os.path.isdir(config_folder):
-            click.echo("Config folder does not exist or is not a directory!")
-            return
-        
-        xml_files = [file for file in os.listdir(config_folder) if file.endswith(".xml")]
-        if not xml_files:
-            results = []
-            results.append(["Detect XML in Config Folder", "FAILED"])
-            click.echo(tabulate(results, headers=["Test Case", "Status"], tablefmt="fancy_grid"))
-            return
-        else:
-            try:
-                xml_filepath = os.path.join("./conf", self.cip_config_selected)
-                results.append(["Detect XML in Config Folder", "OK"])
-            except FileNotFoundError:
-                click.echo("Error: The ./conf folder is empty.")
-        
-        
-    
-        # Check if the file exists
-        file_exists_status = "OK" if os.path.exists(xml_filepath) else "FAILED"
-        results.append(["CIP Conf File Exists", file_exists_status])
-    
-        # Check if the file is an XML file
-        is_xml_status = "OK" if self.cip_config_selected.lower().endswith(".xml") else "FAILED"
-        results.append(["File is XML", is_xml_status])
-    
-        # Check if the file is valid and parseable
-        xml_parse_status = ""
-        if file_exists_status == "OK" and is_xml_status == "OK":
-            try:
-                tree = ET.parse(xml_filepath)
-                root = tree.getroot()
-                self.root = root
-                xml_parse_status = "OK"
-            except ET.ParseError as e:
-                xml_parse_status = f"FAILED: {e}"
-        else:
-            xml_parse_status = "SKIPPED"
-        results.append(["Parse XML", xml_parse_status])
-    
-        # Check if there is only one assembly element with subtype "OT_EO"
-        if xml_parse_status == "OK":
-            ot_eo_status = "OK" if self.check_ot_eo(root) else "FAILED"
-            results.append(["One Assembly with Subtype 'OT_EO'", ot_eo_status])
-        
-            # Check if there is only one assembly element with subtype "TO"
-            to_status = "OK" if self.check_to(root) else "FAILED"
-            results.append(["One Assembly with Subtype 'TO'", to_status])
-    
-        
-        # If file does not exist or is not XML, overall status should be failed
-        overall_status = all(status == "OK" for _, status in results)
-        if overall_status:
-            self.overall_cip_valid = True
-        else:
-            self.overall_cip_valid = False
-            
-        results.append(["Overall Status", "OK" if overall_status else "FAILED"])
-    
-        click.echo(tabulate(results, headers=["Test Case", "Status"], tablefmt="fancy_grid"))
-        return overall_status
+        xml_filepath = os.path.join("./conf", self.cip_config_selected)
+        validation = cip_config.validate_cip_config(xml_filepath)
 
-    def check_ot_eo(self, root):
-        assemblies = root.findall("./assembly")
-        ot_eo_assemblies = [assembly for assembly in assemblies if assembly.get("subtype") == "OT_EO" and len(assembly.findall("*")) >= 1]
-        try:
-            self.ot_eo_assemblies = ot_eo_assemblies[0]
-            self.OT_packet_class, assembly_size = self.create_packet_class(ot_eo_assemblies[0])
+        self.overall_cip_valid = validation.overall_status
+        self.cip_test_flag = validation.overall_status
+        self.root = validation.root
+        self.ot_eo_assemblies = validation.ot_info.assembly if validation.ot_info else None
+        self.to_assemblies = validation.to_info.assembly if validation.to_info else None
+
+        if validation.ot_info and validation.ot_info.packet_class is not None:
+            self.OT_packet_class = validation.ot_info.packet_class
             self.OT_packet = self.OT_packet_class()
-            print(f"Length of OT Assembly Expected: {assembly_size//8}")
-            print(f"Length of OT Assembly Formed: {len(self.OT_packet)}")
-            # print(self.OT_packet.fields_desc)
-            
-        except:
-            print("OT_Packet Creation failed")
-            self.logger.info(f"{self.check_ot_eo.__name__}: OT Packet Initialization Failure")
-        
-        return len(ot_eo_assemblies) == 1
+            expected = validation.ot_info.assembly_size // 8
+            click.echo(f"Length of OT Assembly Expected: {expected}")
+            click.echo(f"Length of OT Assembly Formed: {len(self.OT_packet)}")
+        else:
+            self.OT_packet_class = None
 
-    def check_to(self, root):
-        assemblies = root.findall("./assembly")
-        to_assemblies = [assembly for assembly in assemblies if assembly.get("subtype") == "TO" and len(assembly.findall("*")) >= 1]
-        try:
-            self.to_assemblies = to_assemblies[0]
-            self.TO_packet_class, assembly_size = self.create_packet_class(to_assemblies[0])
-            
+        if validation.to_info and validation.to_info.packet_class is not None:
+            self.TO_packet_class = validation.to_info.packet_class
             self.TO_packet = self.TO_packet_class()
-            print(f"Length of OT Assembly Expected: {assembly_size//8}")
-            print(f"Length of OT Assembly Formed: {len(self.TO_packet)}")
-            # print(self.TO_packet.fields_desc)
-        except:
-            print("TO_Packet Creation failed")
-            self.logger.info(f"{self.check_to.__name__}: TO Packet Initialization Failure")
-        return len(to_assemblies) == 1
+            expected = validation.to_info.assembly_size // 8
+            click.echo(f"Length of TO Assembly Expected: {expected}")
+            click.echo(f"Length of TO Assembly Formed: {len(self.TO_packet)}")
+        else:
+            self.TO_packet_class = None
 
-    def check_cip_xml_validity(self):
-        return self.check_cip_config()
-        
+        table = tabulate(validation.results, headers=["Test Case", "Status"], tablefmt="fancy_grid")
+        click.echo(table)
+        click.echo("")
+
+        if not validation.overall_status:
+            click.echo("Some tests failed. Restarting CIP Tool.")
+
+        return validation.overall_status
+
     def config_network(self):
         self.logger.info("Executing config_network function")
         click.echo("╔══════════════════════════════════════════╗")
         click.echo("║        Network Configuration             ║")
         click.echo("╚══════════════════════════════════════════╝")
         click.echo("")
-        
+
         self.net_test_flag = False
-        self.user_multicast_address = None
-        
+        self.multicast_test_status = False
+        self.multicast_route_exist = False
+        self.platform_multicast_route = None
+
         time.sleep(0.1)
-        
-        self.ip_address = click.prompt("Enter Target IP Address", default= '10.0.1.1')
-        self.user_multicast_address = click.prompt("Enter the multicast group joining IP address", default='239.192.1.3', type=str)
-        
-        print(f"ip_address: {self.ip_address}")
-        print(f"user_multicast_address : {self.user_multicast_address}")
-                
+
+        self.ip_address = click.prompt("Enter Target IP Address", default='10.0.1.1')
+        self.user_multicast_address = click.prompt(
+            "Enter the multicast group joining IP address",
+            default='239.192.1.3',
+            type=str,
+        )
+
         click.echo("\n===== Testing Communication with Target =====")
-        # click.echo(f" Attempting to Communicate with {self.ip_address}")
         time.sleep(1)
-        
-        results = [["Communication Test Result", "Status"]]
-        if self.communicate_with_target():
-            results.append(["Communication with Target", "OK"])
-            # click.echo(" Communication has been Tested -> OK")
-        else:
-            results.append(["Communication with Target", "FAILED"])
-            # click.echo(" Communication has been Tested -> FAILED")
-            
-            
-        if self.check_multicast_support():
-            results.append(["Mutlicast Group Join", "OK"])
-        else:
-            results.append(["Mutlicast Group Join", "FAILED"])
-        
-        if self.multicast_route_exist:
-            results.append(["Mutlicast route Compatibity", "OK"])
-        else:
-            results.append(["Mutlicast route Compatibity", "FAILED"])
-        
+
+        network_result = cip_network.config_network(self.ip_address, self.user_multicast_address)
+
+        self.net_test_flag = network_result.reachable
+        self.multicast_test_status = network_result.multicast_supported
+        self.multicast_route_exist = network_result.route_exists
+        self.platform_multicast_route = network_result.route
+
+        results = [
+            ["Communication Test Result", "Status"],
+            ["Communication with Target", "OK" if network_result.reachable else "FAILED"],
+            ["Mutlicast Group Join", "OK" if network_result.multicast_supported else "FAILED"],
+            ["Mutlicast route Compatibity", "OK" if network_result.route_exists else "FAILED"],
+        ]
+
         click.echo("\n" + tabulate(results, headers="firstrow", tablefmt="fancy_grid"))
         click.echo("")
-            
-        
-        if self.net_test_flag and self.multicast_test_status:
+
+        if network_result.reachable and network_result.multicast_supported:
             time.sleep(0.1)
             return True
-        else:
-            click.echo("===== Falsed Network Configuration Test =====")
-            click.echo("")
-            click.echo("=============================================")
-            click.echo("=====        Restarting CIP Tool        =====")
-            click.echo("=============================================")
-            return False
-        
-    def communicate_with_target(self):
-        self.logger.info("Executing communication_with_target function")
-        self.net_test_flag = False
-        try:
-            ###########Testing#############
-            DCU_PING_CMD = 'ping -c 1 10.0.1.1'
-            PingResult = os.system(DCU_PING_CMD)
-            print(PingResult)
-            if(PingResult!=0):
-                self.net_test_flag = False
-                return False
-            else:
-                self.net_test_flag = True
-                return True
-        except Exception as e:
-            click.echo("Error occurred: {}".format(e))
-            self.net_test_flag = False
-            time.sleep(0.1)
-            return False
-            
-            
-            ###############################
-            
-            # click.echo("1. Attempting to Communicate with {}...".format(self.ip_address))
-            # response = ping3.ping(self.ip_address)
 
-            # if response is not None:
-            #     click.echo("2. Ping successful. Response time: {:.3f} ms".format(response))
-            #     self.net_test_flag = True
-            #     time.sleep(0.1)
-            #     return True
-            # else:
-            #     click.echo("3. Ping failed. No response received.")
-            #     self.net_test_flag = False
-            #     time.sleep(0.1)
-            #     return False
-        # except Exception as e:
-        #     click.echo("Error occurred: {}".format(e))
-        #     self.net_test_flag = False
-        #     time.sleep(0.1)
-        #     return False
+        click.echo("===== Failed Network Configuration Test =====")
+        click.echo("")
+        click.echo("=============================================")
+        click.echo("=====        Restarting CIP Tool        =====")
+        click.echo("=============================================")
+        return False
 
                 
     def help_menu(self):
@@ -1358,13 +908,13 @@ class CLI:
     def calculate_connection_params(self):
         ot_size = None
         to_size = None
-                
+
         try:
             ot_size = int(self.ot_eo_assemblies.attrib.get("size"))
             to_size = int(self.to_assemblies.attrib.get("size"))
         except:
             self.logger.info("Unable to fetch assembly size")
-        
+
         # Calculate OT_Connection_param and TO_Connection_param
         if ot_size is not None:
             ot_connection_param = 0x4800 | ((ot_size // 8) + 6)
@@ -1374,141 +924,57 @@ class CLI:
             to_connection_parma = 0x2800 | ((to_size // 8) + 6)
         else:
             to_connection_parma = None
-        
-        return (ot_connection_param,to_connection_parma)
-    
-    def ManageCIP_IOCommunication(self, clMPU_CIP_Server):
-        self.logger.info("Executing ManageCIP_IOCommunication function")
-        
-        #alive byte used by DCU to check MPU activity
-        MPU_CTCMSAlive = int(0)
-        
-        CIP_AppCounter = 65500
-        bCIPErrorOccured = bool(False)
-        
-        #infinite loop to manage CIP IO DCU<->MPU until CIP error occured
-        while(not(bCIPErrorOccured)):
-            
-            pkgCIP_IO = clMPU_CIP_Server.recv_UDP_ENIP_CIP_IO(DEBUG_CIP_FRAMES,0.5)
-            
-            if(pkgCIP_IO != None):
-                self.logger.info("ManageCIP_IOCommunication: pkgCIP_IO - Detected Incoming Stream")
-                
-                # # Clear TO packet instance
-                # self.TO_packet = None
-                
-                # Parse the TO Packet from CIP IO Payload
-                self.lock.acquire()
-                self.TO_packet = self.TO_packet_class((pkgCIP_IO.payload.load))
-                
-                # self.TO_packet.show()
-                self.lock.release()
-                
-                self.lock.acquire()  
-                if(self.TO_packet != None):
-                    self.logger.info("ManageCIP_IOCommunication: TO_packet data parsed successfuly")
-                    if(MPU_CTCMSAlive>=255):
-                        MPU_CTCMSAlive = 0
-                    else:
-                        MPU_CTCMSAlive += 1 ##1 step per 100 ms = 1 step per 100 ms see ICD
-                        
-                    # self.set_field('MPU_CTCMSAlive',int(self.MPU_CTCMSAlive))
-                    
-                    self.MPU_heartbeat('MPU_CTCMSAlive',MPU_CTCMSAlive)
-                    # self.DateTimeSec('MPU_CDateTimeSec')
-                    
-                    self.OT_packet.MPU_CDateTimeSec = calendar.timegm(time.gmtime())
-                    # self.OT_packet.show()
-                    clMPU_CIP_Server.send_UDP_ENIP_CIP_IO(CIP_Sequence_Count=CIP_AppCounter, Header=1,AppData=self.OT_packet)
-                    
-                    #CIP_Sequence_Count must be from 0 to 65535
-                    if(CIP_AppCounter < 65535):
-                        CIP_AppCounter += 1
-                    else:
-                        CIP_AppCounter = 0
-                else:
-                    self.logger.warning("ManageCIP_IOCommunication: TO_packet data parse failed")
-                    bCIPErrorOccured = True
-                
-                self.lock.release()
-                    
-            else:
-                self.logger.warning("Not possible to convert CIP IO frame into scapy packet class")
-                bCIPErrorOccured = True
-                return(bCIPErrorOccured)
-        
-        # end while
-        return(bCIPErrorOccured)
 
-       
+        return (ot_connection_param,to_connection_parma)
+
+    def _update_to_packet(self, packet):
+        with self.lock:
+            self.TO_packet = packet
+    
     def start_comm(self):
         self.logger.info("Executing CIP Communication Start function")
-  
-        ot_param,to_param = self.calculate_connection_params()
-        self.logger.info(f"ot_param:{hex(ot_param)}")
-        self.logger.info(f"to_param:{hex(to_param)}")
-        if ot_param != None:
-            self.logger.warning("start_comm: ot_connection_param is defined")
-        else:
-            self.logger.warning("start_comm: ot_connection_param is None")
+
+        if self.session.running:
+            click.echo("CIP communication is already running.")
             return
-        if to_param != None:
-            self.logger.warning("start_comm: ot_connection_param is defined")
-        else:
-            self.logger.warning("start_comm: to_connection_param is None")
+
+        if self.TO_packet_class is None or self.OT_packet_class is None:
+            click.echo("CIP packets are not initialised. Run 'cip_config' first.")
             return
-        
-        def start_comm_thread():
-            self.logger.info("Executing start_comm_thread function")
-            self.clMPU_CIP_Server = Client(IPAddr=self.ip_address,MulticastGroupIPaddr=self.user_multicast_address)
-            self.clMPU_CIP_Server.ot_connection_param = ot_param
-            self.clMPU_CIP_Server.to_connection_param = to_param
-            
-            if(self.clMPU_CIP_Server.connected):
-                self.logger.info(f"start_comm_thread: Established Session{format(self.clMPU_CIP_Server.connected)}")
-                
-                #send forward open and wait DCU response
-                bForwoardOpenRspIsOK = self.clMPU_CIP_Server.forward_open()
-                if(bForwoardOpenRspIsOK):
-                    self.logger.info("start_comm_thread: Forward Open OK")
-                else:
-                    self.logger.warning("start_comm_thread: Forward Open request failed")
-                    return
-                
-                #manage CIP IO cyclic communication
-                self.bCIPErrorOccured = self.ManageCIP_IOCommunication(self.clMPU_CIP_Server)
-                
-                if(not(self.bCIPErrorOccured)):
-                    # Close CIP connection
-                    self.clMPU_CIP_Server.forward_close() 
-                    
-                #Close all sockets
-                self.clMPU_CIP_Server.close()
-            
-            #no connected                    
-            else:
-                self.logger.warning("start_comm_thread: Not able to establish session")
-                time.sleep(1)
-        
-                
-        self.stop_comm_events = threading.Event()
-        start_comm_thread_instance = threading.Thread(target=start_comm_thread)
-        start_comm_thread_instance.start()
-        
-        
+
+        if self.ip_address is None or self.user_multicast_address is None:
+            click.echo("Network configuration is incomplete. Run 'test_net' first.")
+            return
+
+        ot_param, to_param = self.calculate_connection_params()
+        if ot_param is None or to_param is None:
+            click.echo("Unable to calculate connection parameters from the assemblies.")
+            return
+
+        params = cip_session.ConnectionParameters(ot_param=ot_param, to_param=to_param)
+
+        try:
+            self.session.start(
+                ip_address=self.ip_address,
+                multicast_address=self.user_multicast_address,
+                connection_params=params,
+                to_packet_class=self.TO_packet_class,
+                ot_packet=self.OT_packet,
+                heartbeat_callback=self.MPU_heartbeat,
+                update_to_packet=self._update_to_packet,
+            )
+        except RuntimeError as exc:
+            click.echo(str(exc))
+
     def stop_comm(self):
         self.logger.info(f"{self.stop_comm.__name__}: Stopping comm thread")
-        if(not(self.bCIPErrorOccured)):
-            # Close CIP connection
-            self.clMPU_CIP_Server.forward_close()
-            self.logger.info(f"{self.stop_comm.__name__}: Stopping comm thread")
-            self.stop_comm_events.set()
-            # click.echo(f"{self.stop_comm.__name__}: Comm Thread been stopped")
-            self.logger.info(f"{self.stop_comm.__name__}: Comm Thread have been successfully stopped")
-        else:
-            self.stop_comm_events.set()
-            click.echo(f"{self.stop_comm.__name__}: Comm Thread been stopped")
-            self.logger.info(f"{self.stop_comm.__name__}: Comm Thread have been successfully stopped")
+        if not self.session.running:
+            click.echo("No active CIP communication session.")
+            return
+
+        self.session.stop()
+        self.bCIPErrorOccured = self.session.error_occurred
+        click.echo("CIP communication stopped.")
 
 
  
