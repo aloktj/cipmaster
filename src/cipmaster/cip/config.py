@@ -50,14 +50,15 @@ def iter_config_directories() -> Iterable[Path]:
     """
 
     with ExitStack() as stack:
-        try:
-            package_files = resources.files("conf")
-        except ModuleNotFoundError:
-            package_files = None
-
-        if package_files is not None:
+        package_candidates = ["cipmaster.conf", "conf"]
+        for package in package_candidates:
+            try:
+                package_files = resources.files(package)
+            except ModuleNotFoundError:
+                continue
             package_path = stack.enter_context(resources.as_file(package_files))
             yield Path(package_path)
+            break
 
         repo_path = Path(__file__).resolve().parent.parent / "conf"
         if repo_path.exists():

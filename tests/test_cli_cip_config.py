@@ -1,7 +1,7 @@
 from typing import Any
 
-from cip import config as cip_config
-from main import CLI
+from cipmaster.cip import config as cip_config
+from cipmaster.cli.app import CIPCLI
 
 
 class DummyUI:
@@ -22,7 +22,7 @@ def test_cli_loads_selected_configuration(monkeypatch):
     files = cip_config.get_available_config_files()
     name, _ = next(iter(files.items()))
 
-    cli = CLI(ui=DummyUI())
+    cli = CIPCLI(ui=DummyUI())
     cli.cip_test_flag = True
 
     assert cli.cip_config(preselected_filename=name)

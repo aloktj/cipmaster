@@ -33,6 +33,21 @@ cipmaster
 By default the CLI discovers CIP XML definitions that ship with the package. You can drop additional XML files into a `conf/` fold
 er alongside your working directory and they will be picked up automatically.
 
+
+## Programmatic Usage
+
+The refactored source tree exposes the CLI controller via `cipmaster.cli.app`.
+Scripts can drive the tool without spawning a subprocess:
+
+```python
+from cipmaster.cli.app import CIPCLI, RunConfiguration, main
+
+configuration = RunConfiguration(auto_continue=True, enable_network=False)
+main(config=configuration)
+```
+
+Supporting modules are available from the `cipmaster.cip` package for direct import if you need fine-grained access to configuration, networking, or session helpers.
+
 ## Automated Tests
 
 The repository includes a lightweight pytest suite that exercises the configuration loader and ensures that bundled XML definition

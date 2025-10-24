@@ -28,19 +28,19 @@ dev = [
 ]
 
 [project.scripts]
-cipmaster = "main:main"
+cipmaster = "cipmaster.cli:main"
 
 [tool.setuptools]
-package-dir = {"" = "phase3"}
+package-dir = {"" = "src"}
 include-package-data = true
-py-modules = ["main"]
 
 [tool.setuptools.packages.find]
-where = ["phase3"]
+where = ["src"]
 
 [tool.setuptools.package-data]
-"conf" = ["*.xml"]
+"cipmaster.conf" = ["*.xml"]
 
 [tool.pytest.ini_options]
 addopts = "-ra"
 testpaths = ["tests"]
+pythonpath = ["src"]
