@@ -507,15 +507,22 @@ class Client(object):
             )
             return None
 
-        if (
-            sequenced_item is not None
-            and self.enip_connection_id_TO
-            and getattr(sequenced_item.payload, "connection_id", None) not in (None, self.enip_connection_id_TO)
-        ):
+        if sequenced_item is not None:
+            connection_id = getattr(sequenced_item.payload, "connection_id", None)
+            expected_ids = tuple(
+                cid
+                for cid in (self.enip_connection_id_TO, self.enip_connection_id_OT)
+                if cid
+            )
+        else:
+            connection_id = None
+            expected_ids = ()
+
+        if connection_id not in (None,) + expected_ids and expected_ids:
             self.logger.debug(
-                "TGV2020: recv_UDP_ENIP_CIP_IO: sequenced connection id 0x%04x does not match expected 0x%04x",
-                getattr(sequenced_item.payload, "connection_id", 0),
-                self.enip_connection_id_TO,
+                "TGV2020: recv_UDP_ENIP_CIP_IO: sequenced connection id 0x%04x does not match expected %s",
+                connection_id or 0,
+                ", ".join(f"0x{cid:04x}" for cid in expected_ids) or "<none>",
             )
 
         try:
