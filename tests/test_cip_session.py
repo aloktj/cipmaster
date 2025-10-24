@@ -7,7 +7,7 @@ import time
 
 from scapy import all as scapy_all
 
-from cip.session import CIPSession, ConnectionParameters
+from cipmaster.cip.session import CIPSession, ConnectionParameters
 
 
 class DummyToPacket(scapy_all.Packet):

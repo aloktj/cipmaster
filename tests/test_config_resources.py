@@ -1,4 +1,4 @@
-from cip import config as cip_config
+from cipmaster.cip import config as cip_config
 
 
 def test_example_config_available():

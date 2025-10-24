@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from cip import network
+from cipmaster.cip import network
 
 
 class StubPlatform(network.PlatformService):

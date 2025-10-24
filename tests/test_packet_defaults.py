@@ -3,7 +3,7 @@ from textwrap import dedent
 
 from scapy import all as scapy_all
 
-from cip import config as cip_config
+from cipmaster.cip import config as cip_config
 
 
 def test_string_fields_use_byte_defaults(tmp_path: Path) -> None:
