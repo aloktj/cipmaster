@@ -4,8 +4,6 @@ from scapy import all as scapy_all
 import os
 import math
 import threading
-import pyfiglet
-from termcolor import colored
 from tabulate import tabulate
 import logging
 from datetime import datetime
@@ -17,6 +15,7 @@ from cipmaster.cip import config as cip_config
 from cipmaster.cip import fields as cip_fields
 from cipmaster.cip import network as cip_network
 from cipmaster.cip.ui import ClickUserInterface, UserInterface
+from cipmaster.cli.ui_helpers import CLIUIHelpers
 from cipmaster.services.config_loader import ConfigLoaderService
 from cipmaster.services.networking import NetworkingService
 from cipmaster.services.sessions import SessionService
@@ -59,16 +58,18 @@ class CIPCLI:
         networking: Optional[NetworkingService] = None,
         sessions: Optional[SessionService] = None,
         network_configurator=None,
+        ui_helpers: Optional[CLIUIHelpers] = None,
     ):
         self.logger = logging.getLogger(self.__class__.__name__)
         self.ui = ui or ClickUserInterface()
         self.config_loader = config_loader or ConfigLoaderService()
         self.networking = networking or NetworkingService()
         self.sessions = sessions or SessionService()
+        self.ui_helpers = ui_helpers or CLIUIHelpers()
         if network_configurator is None:
-            self.network_configurator = self.networking.configure_network
+            self._network_configurator = self.networking.configure_network
         else:
-            self.network_configurator = network_configurator
+            self._network_configurator = network_configurator
         self.ip_address = None
         self.cip_xml_path = None
         self.net_test_flag = False
@@ -125,59 +126,16 @@ class CIPCLI:
         self.ui.write(*args, sep=sep, end=end)
 
     def spinning_cursor(self):
-        while True:
-            for cursor in '|/-\\':
-                yield cursor
-    
+        return self.ui_helpers.spinning_cursor()
+
     def loading_message(self, message, duration):
-        spinner = self.spinning_cursor()
-        sys.stdout.write(message)
-        sys.stdout.flush()
-        start_time = time.time()
-        while time.time() - start_time < duration:
-            sys.stdout.write(next(spinner))
-            sys.stdout.flush()
-            time.sleep(0.1)
-            sys.stdout.write('\b')
-        sys.stdout.write('\r')  # Move cursor to the beginning of the line
-        sys.stdout.write(' ' * len(message))  # Clear the loading message
-        sys.stdout.write('\r')  # Move cursor to the beginning of the line
-        sys.stdout.flush()
-        
+        self.ui_helpers.loading_message(message, duration)
+
     def progress_bar(self, message, duration):
-        self.echo("\n")
-        total_ticks = 75  # Number of ticks in the progress bar
-        start_time = time.time()
-        while time.time() - start_time < duration:
-            elapsed_time = time.time() - start_time
-            progress = min(int((elapsed_time / duration) * total_ticks), total_ticks)
-            remaining = total_ticks - progress
-            bar = '[' + '=' * progress + ' ' * remaining + ']'
-            sys.stdout.write('\r')
-            sys.stdout.write(f'{message} {bar} {elapsed_time:.1f}s/{duration:.1f}s')
-            sys.stdout.flush()
-            time.sleep(0.1)
-        sys.stdout.write('\n')
-        self.echo("\n")
-    
-    
+        self.ui_helpers.progress_bar(message, duration, echo=self.echo)
+
     def display_banner(self):
-        table_width = 75
-        
-        self.echo("\n\n")
-        banner_text = pyfiglet.figlet_format("\t\t\t\t\t CIP Tool \t\t\t\t\t", font="slant")
-        colored_banner = colored(banner_text, color="green")
-        
-        banner_table = [[colored_banner]]
-        self.echo(tabulate(banner_table, tablefmt="plain"))
-        
-        # Additional information
-        self.write(*"=" * 100, sep="")
-        self.write(("Welcome to CIP Tool").center(table_width))
-        self.write(("Version: 3.0").center(table_width))
-        self.write(("Author: Alok T J").center(table_width))
-        self.write(("Copyright (c) 2024 Wabtec (based on plc.py)").center(table_width))
-        self.write(*"=" * 100, sep="")
+        self.ui_helpers.display_banner(self.echo, self.write)
     
     ###-------------------------------------------------------------###
     ###                     Multicast Route                         ###
@@ -190,22 +148,25 @@ class CIPCLI:
     
     
     def list_files_in_config_folder(self):
-        self.config_file_map = self.config_loader.get_available_config_files()
-        self.config_file_names = sorted(self.config_file_map)
+        options = self.config_loader.discover_configurations()
+        self.config_file_map = options.mapping
+        self.config_file_names = options.names
+        self.cip_file_count = options.count
+        self.last_cip_file_name = options.last
+
         if not self.config_file_names:
             self.echo("No CIP configuration files were found. Place XML files in the 'conf'"
                       " directory or install a package that provides them.")
-            return
+            return options
 
         self.echo("Detected Files in Config Folder:")
         self.echo("")
 
         for idx, file in enumerate(self.config_file_names, start=1):
             self.echo(f" {idx}. {file}")
-            self.last_cip_file_name = file
-            self.cip_file_count += 1
-        
+
         self.echo("")
+        return options
     
     def cip_config(self, preselected_filename: Optional[str] = None):
         self.logger.info("Executing cip_config function")
@@ -217,20 +178,20 @@ class CIPCLI:
         self.config_file_names = []
         self.config_file_map = {}
         self.last_cip_file_name = None
-        self.list_files_in_config_folder()
+        options = self.list_files_in_config_folder()
         time.sleep(0.1)
 
-        if preselected_filename is not None and self.cip_config_attempts == 0:
-            self.cip_config_selected = preselected_filename
-        elif self.cip_file_count > 1:
-            if self.cip_config_attempts == 0:
-                self.cip_config_selected = self.prompt("CIP Configuration Filename")
-                self.echo("")
-            elif self.cip_config_attempts > 0 and self.confirm('Do you want to change CIP Configuration?', default=True):
-                self.cip_config_selected = self.prompt("CIP Configuration Filename")
-        else:
-            self.cip_config_selected = self.last_cip_file_name
-
+        selection = self.config_loader.select_configuration(
+            options,
+            attempts=self.cip_config_attempts,
+            preselected=preselected_filename,
+            current_selection=self.cip_config_selected,
+            prompt=self.prompt,
+            confirm=self.confirm,
+        )
+        self.cip_config_selected = selection.filename
+        if selection.prompted:
+            self.echo("")
         self.cip_config_attempts += 1
 
         if not self.cip_config_selected:
@@ -240,9 +201,9 @@ class CIPCLI:
             return False
 
         try:
-            xml_filepath = self.config_loader.resolve_config_path(
+            xml_filepath = self.config_loader.resolve_selection(
                 self.cip_config_selected,
-                available=self.config_file_map,
+                options,
             )
         except cip_config.ConfigNotFoundError:
             self.echo(f"CIP configuration '{self.cip_config_selected}' not found.")
@@ -250,7 +211,7 @@ class CIPCLI:
             self.cip_test_flag = False
             return False
 
-        validation = self.config_loader.validate_cip_config(os.fspath(xml_filepath))
+        validation = self.config_loader.validate_selection(xml_filepath)
 
         self.overall_cip_valid = validation.overall_status
         self.cip_test_flag = validation.overall_status
@@ -325,30 +286,24 @@ class CIPCLI:
         self.echo("\n===== Testing Communication with Target =====")
         time.sleep(1)
 
-        network_result = self.network_configurator(
+        summary = self.networking.run_configuration(
             self.ip_address,
             self.user_multicast_address,
             ping_command=ping_command,
             platform_service=platform_service,
             subprocess_service=subprocess_service,
+            configurator=self._network_configurator,
         )
 
-        self.net_test_flag = network_result.reachable
-        self.multicast_test_status = network_result.multicast_supported
-        self.multicast_route_exist = network_result.route_exists
-        self.platform_multicast_route = network_result.route
+        self.net_test_flag = summary.result.reachable
+        self.multicast_test_status = summary.result.multicast_supported
+        self.multicast_route_exist = summary.result.route_exists
+        self.platform_multicast_route = summary.result.route
 
-        results = [
-            ["Communication Test Result", "Status"],
-            ["Communication with Target", "OK" if network_result.reachable else "FAILED"],
-            ["Mutlicast Group Join", "OK" if network_result.multicast_supported else "FAILED"],
-            ["Mutlicast route Compatibity", "OK" if network_result.route_exists else "FAILED"],
-        ]
-
-        self.echo("\n" + tabulate(results, headers="firstrow", tablefmt="fancy_grid"))
+        self.echo("\n" + tabulate(summary.table, headers="firstrow", tablefmt="fancy_grid"))
         self.echo("")
 
-        if network_result.reachable and network_result.multicast_supported:
+        if summary.result.reachable and summary.result.multicast_supported:
             time.sleep(0.1)
             return True
 
@@ -904,28 +859,6 @@ class CIPCLI:
                 for line in last_100_lines:
                     self.echo(line.strip())
     
-    def calculate_connection_params(self):
-        ot_size = None
-        to_size = None
-
-        try:
-            ot_size = int(self.ot_eo_assemblies.attrib.get("size"))
-            to_size = int(self.to_assemblies.attrib.get("size"))
-        except:
-            self.logger.info("Unable to fetch assembly size")
-
-        # Calculate OT_Connection_param and TO_Connection_param
-        if ot_size is not None:
-            ot_connection_param = 0x4800 | ((ot_size // 8) + 6)
-        else:
-            ot_connection_param = None
-        if to_size is not None:
-            to_connection_parma = 0x2800 | ((to_size // 8) + 6)
-        else:
-            to_connection_parma = None
-
-        return (ot_connection_param,to_connection_parma)
-
     def _update_to_packet(self, packet):
         with self.lock:
             self.TO_packet = packet
@@ -945,15 +878,19 @@ class CIPCLI:
             self.echo("Network configuration is incomplete. Run 'test_net' first.")
             return
 
-        ot_param, to_param = self.calculate_connection_params()
-        if ot_param is None or to_param is None:
+        params_result = self.sessions.calculate_connection_params(
+            self.ot_eo_assemblies,
+            self.to_assemblies,
+        )
+        if not params_result.is_valid:
             self.echo("Unable to calculate connection parameters from the assemblies.")
             return
 
-        params = self.sessions.ConnectionParameters(ot_param=ot_param, to_param=to_param)
+        params = params_result.to_connection_parameters(self.sessions.ConnectionParameters)
 
         try:
-            self.session.start(
+            self.sessions.start_session(
+                self.session,
                 ip_address=self.ip_address,
                 multicast_address=self.user_multicast_address,
                 connection_params=params,
@@ -971,7 +908,7 @@ class CIPCLI:
             self.echo("No active CIP communication session.")
             return
 
-        self.session.stop()
+        self.sessions.stop_session(self.session)
         self.bCIPErrorOccured = self.session.error_occurred
         self.echo("CIP communication stopped.")
 

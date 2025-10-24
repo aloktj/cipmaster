@@ -2,9 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from dataclasses import dataclass
+from typing import Callable, Optional
 
 from cipmaster.cip import network as cip_network
+
+
+@dataclass
+class NetworkConfigurationSummary:
+    """Summary of the network configuration checks."""
+
+    result: cip_network.NetworkCheckResult
+    table: list[list[str]]
 
 
 class NetworkingService:
@@ -26,6 +35,32 @@ class NetworkingService:
             platform_service=platform_service,
             subprocess_service=subprocess_service,
         )
+
+    def run_configuration(
+        self,
+        ip_address: str,
+        multicast_address: str,
+        *,
+        ping_command: Optional[cip_network.CommandType] = None,
+        platform_service: Optional[cip_network.PlatformService] = None,
+        subprocess_service: Optional[cip_network.SubprocessService] = None,
+        configurator: Optional[Callable[..., cip_network.NetworkCheckResult]] = None,
+    ) -> NetworkConfigurationSummary:
+        runner = configurator or self.configure_network
+        result = runner(
+            ip_address,
+            multicast_address,
+            ping_command=ping_command,
+            platform_service=platform_service,
+            subprocess_service=subprocess_service,
+        )
+        table = [
+            ["Communication Test Result", "Status"],
+            ["Communication with Target", "OK" if result.reachable else "FAILED"],
+            ["Mutlicast Group Join", "OK" if result.multicast_supported else "FAILED"],
+            ["Mutlicast route Compatibity", "OK" if result.route_exists else "FAILED"],
+        ]
+        return NetworkConfigurationSummary(result=result, table=table)
 
     def communicate_with_target(
         self,
@@ -52,4 +87,4 @@ class NetworkingService:
         return getattr(cip_network, item)
 
 
-__all__ = ["NetworkingService"]
+__all__ = ["NetworkingService", "NetworkConfigurationSummary"]
